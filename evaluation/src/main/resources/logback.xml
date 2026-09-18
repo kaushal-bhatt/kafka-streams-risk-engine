@@ -1,0 +1,18 @@
+<configuration>
+    <!-- The engine logs every REVIEW and DECLINE at INFO. Across 1.85M transactions that is
+         tens of thousands of lines and a real slowdown; the evaluator reports its own progress. -->
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss} %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <!-- On Windows, Kafka Streams logs "Failed to change permissions for the directory" at
+         ERROR on every start: it tries to set POSIX permissions the filesystem doesn't have.
+         Harmless, and alarming in a run meant to be reproduced by others, so this one logger
+         is silenced. Nothing else is. -->
+    <logger name="org.apache.kafka.streams.processor.internals.StateDirectory" level="OFF"/>
+
+    <root level="WARN">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>

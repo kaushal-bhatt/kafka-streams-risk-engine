@@ -49,6 +49,43 @@ The lesson: **default caching trades latency for throughput, and a unit test har
 commits on every record hides that trade completely.** Any Kafka Streams path where table
 freshness matters needs this decided on purpose.
 
+## Stage 7: two hours to evaluate, then four minutes
+
+The first full evaluation ran at ~250 transactions/s, which is over two hours for 1.85M, and
+looked frozen because it only reported progress every 100k rows. Two guesses failed before
+measurement found the cause:
+
+1. **Guess: RocksDB flushing on every commit.** Switched every store to in-memory. No change.
+2. **Guess: exactly-once would skip the per-record checkpoint.** It didn't: the test driver
+   enforces a checkpoint on every commit regardless. ~200/s.
+3. **Measured:** 12 thread dumps of the running JVM (`jcmd <pid> Thread.print`). 11 of the 12
+   were inside `OffsetCheckpoint.write -> FileDescriptor.sync`, with `RocksDBStore.onCommit` on
+   the stack. So one store was *still* on RocksDB. The state directory showed exactly one:
+   `card-customer-fk-subscription-store`, the foreign-key join's internal store.
+
+`javap -c` on Kafka Streams 3.7.1's `KTableImpl.doJoinOnForeignKey` showed why the in-memory
+setting didn't reach it: it calls `Stores.persistentTimestampedKeyValueStore(...)` directly.
+In 3.8.1 the same method uses `SubscriptionStoreFactory`, which calls
+`dslStoreSuppliers().keyValueStore(...)` and so honours the setting.
+
+Fix: the evaluation module alone runs Kafka Streams 3.8.1. The engine stays on 3.7.1 until a
+deliberate upgrade. Result: ~8,000/s, the full dataset in 3m50s. The same 50,000 transactions
+on the old and new setups produced reports identical line for line (63 lines diffed), so the
+speed-up changed nothing but the speed.
+
+Lesson: after the first wrong guess, measure. Two fixes based on reasoning cost two runs; one
+set of thread dumps found the answer.
+
+## Stage 7: what the evaluation showed about the rules
+
+See the README's Evaluation section for the numbers. The one to remember is that
+`GEO_VELOCITY` caused 71% of false declines on this data. Sparkov jitters each merchant's
+location up to ~100 km per transaction, and the rule has no model of location noise beyond a
+100 km floor. The rule behaves exactly as specified. What this shows is that "impossible
+travel" needs to scale with distance: 10,000 km in minutes is certain, 150 km in minutes is
+often just noise. That, and the unused REVIEW band, is the next tuning experiment: train on
+`fraudTrain`, report `fraudTest` only.
+
 ## Stage 6: standby replicas don't speed up failover. They keep reads up during it.
 
 The stage 3 note below originally said standbys would remove "the restore part" of the ~35 s

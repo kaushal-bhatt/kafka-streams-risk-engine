@@ -14,6 +14,9 @@ in KRaft mode.
 > - Any card's full risk picture can be queried over HTTP straight from the engine's state.
 > - Processing is exactly-once.
 > - Reads survive an instance being killed.
+> - The rules are **measured against 1.85M labelled transactions**. They catch 89% of
+>   fraud-hit cards and stop 54% of fraud by value, and the measurement also shows exactly
+>   where they fail. See [Evaluation](#evaluation-measured-against-185m-labelled-transactions).
 >
 > See the [roadmap](#roadmap) for what is planned. Nothing below claims a feature that isn't in
 > the code, and every number below was measured.
@@ -284,6 +287,70 @@ risk_dlq_records_total{source="payments.transactions.v1"} 1.0
 kafka_stream_task_dropped_records_total{task_id="0_0",...} 1.0     <- Kafka's own count agrees with the DLQ
 ```
 
+---
+
+## Evaluation: measured against 1.85M labelled transactions
+
+A rules engine that has only ever seen its own demo scenarios hasn't been tested. This one was
+run over all 1,852,394 transactions of the
+[Sparkov dataset](https://www.kaggle.com/datasets/kartik2112/fraud-detection), 9,651 of them
+labelled as fraud.
+
+The evaluator runs the **production topology itself**: the same `EnrichmentTopology`,
+`DecisionTopology`, `RiskEvaluator` and state stores, hosted in `TopologyTestDriver` and fed in
+event-time order. Each transaction's fraud label travels through the pipeline and comes back
+on the engine's own `Decision`, so what's scored is exactly what the engine emitted. It takes
+under 4 minutes and is deterministic: the same data always gives the same numbers. The full
+generated report is in [docs/EVALUATION.md](docs/EVALUATION.md).
+
+| | All 1.85M | Test period only |
+|---|---:|---:|
+| Fraud-hit cards caught | **872 of 976 (89.3%)** | |
+| Fraud **amount** stopped | **$2.78M of $5.12M (54.4%)** | 54.7% |
+| Fraudulent transactions stopped (recall) | 35.5% | 35.9% |
+| Declines that were fraud (precision) | 7.9% | 5.3% |
+| Legitimate purchases declined (false-positive rate) | 2.2% | 2.5% |
+
+The rules stop over half the fraud by value from just over a third of the fraudulent
+transactions, because they catch the large ones. Recall is stable between the training and
+test periods (35.4% against 35.9%). Precision is lower in the test period because fraud itself
+is rarer there (0.39% against 0.58%), not because the rules got worse.
+
+### What the measurement found
+
+**One rule causes most of the damage.** `GEO_VELOCITY` fired on 28,630 transactions, and
+98.9% of them were legitimate. That's **71% of all false declines**, in return for 3.3% of the
+fraud caught. The cause is in the data: Sparkov places each merchant up to ~100 km from the
+cardholder, independently per transaction, so two purchases minutes apart routinely look like
+impossible travel. The rule works as designed on real impossible travel (10,000 km in 4
+minutes, as in the demo). It was never designed for location data this noisy. Without it,
+precision would roughly triple, to about 21%, for about 2 points of recall. That's an estimate:
+removing it would also change which amounts count toward daily spend.
+
+**One rule does most of the work.** `DAILY_LIMIT` fired on 15,075 transactions with 21.4%
+precision, **41× better than random**, and caught a third of all fraud. This dataset's fraud
+comes as bursts of large purchases. The caveat is real: Sparkov has no limits, so they're
+assigned per card. What's validated is the *signal*, unusually high spend today. The exact
+numbers depend on the invented limits.
+
+**Two rules were never exercised.** `VELOCITY` and `CARD_TESTING` didn't fire once in 1.85M
+transactions, because this dataset's fraud isn't rapid-fire or small-amount. The evaluation
+says nothing about them either way; the scripted scenarios and unit tests do.
+
+**The REVIEW band went unused.** Every rule that fired here scores either 80 (decline) or at
+most 30 (approve). So there were zero REVIEW decisions: no middle ground where a low-precision
+signal like `GEO_VELOCITY` could send a transaction to a human instead of blocking it. That's a
+scoring design gap, and fixing it is the obvious next experiment. It has to be done as tuning
+on `fraudTrain` with the result reported on `fraudTest` alone, or the number is fitted to its
+own test set.
+
+```bash
+./gradlew :evaluation:run
+```
+
+This needs the two CSVs in `data/` (see [docs/DATA.md](docs/DATA.md)) and writes
+`docs/EVALUATION.md`.
+
 Also in place:
 
 - An Avro data model in a single IDL file, registered in Schema Registry with `BACKWARD`
@@ -473,7 +540,7 @@ docker exec -it risk-schema-registry kafka-avro-console-consumer --bootstrap-ser
 ./gradlew test
 ```
 
-38 tests, none of which need running infrastructure. The topology tests drive
+42 tests, none of which need running infrastructure. The topology tests drive
 `TopologyTestDriver` with an in-memory mock Schema Registry. The query tests read the same
 stores back out, and check the routing logic against a mocked second instance:
 
@@ -486,7 +553,9 @@ stores back out, and check the routing logic against a mocked second instance:
 The dead-letter test puts real garbage bytes on the transactions topic. It checks that they
 land in the DLQ with their provenance, that the next record still gets a decision, and that
 the engine stops rather than drop a record when the DLQ itself fails. The schema-evolution
-test proves compatibility in both directions against the real v1 schema.
+test proves compatibility in both directions against the real v1 schema. The evaluation
+module's tests check the scoring maths by hand, and push a Kaggle-format CSV through the whole
+pipeline.
 
 Each rule has its own test, including the edge cases that matter:
 
@@ -575,8 +644,9 @@ crash-loops with `Schema N not found; error code: 40403` the first time it reads
 - [x] **Stage 6: Hardening.** Exactly-once processing (latency measured), a dead-letter queue,
       standby replicas with measured failover, a live schema evolution, Prometheus metrics.
       A Grafana dashboard is not built yet.
-- [ ] **Stage 7: Evaluation.** Precision and recall of the rules measured against 1.85M
-      labelled transactions
+- [x] **Stage 7: Evaluation.** The rules measured against 1.85M labelled transactions with the
+      production topology, reproducible in under 4 minutes. Next: tune the scoring on
+      `fraudTrain`, report on `fraudTest`.
 
 The full plan is in [docs/BUILD-PLAN.md](docs/BUILD-PLAN.md).
 
@@ -608,13 +678,15 @@ kafka-streams-risk-engine/
 │       ├── dashboard/    Live decision feed (server-sent events); the page is in resources/static
 │       ├── errors/       Dead-letter queue: the deserialization handler and its publisher
 │       └── health/       Health check that reports the Kafka Streams state
-├── traffic-generator/    Seeded fraud scenarios and the dataset replay
+├── traffic-generator/    Seeded fraud scenarios, latency probe, dataset replay (SparkovMapping)
+├── evaluation/           Runs the production topology over the labelled dataset; writes docs/EVALUATION.md
 ├── docker/               Topic creation script
 ├── scripts/              Dataset download
 └── docs/
     ├── DESIGN.md         Architecture and the reasoning behind each decision
     ├── BUILD-PLAN.md     Staged plan and progress
     ├── DATA.md           Test data: the scripted scenarios and the labelled dataset
+    ├── EVALUATION.md     Generated evaluation report (precision, recall, per-rule, per-card)
     └── NOTES.md          Things that broke, and why
 ```
 
@@ -632,6 +704,12 @@ A few problems from building this, written up in [docs/NOTES.md](docs/NOTES.md):
   ruling out partitioning, deserialization and join logic one at a time, then timing probes
   against a fresh card. Fixed by disabling caching on the reference stores, and verified with
   an A/B run against the old build.
+- **The evaluation first ran at 250 transactions a second: two hours for the dataset.** Thread
+  dumps put almost all the time in a checkpoint file fsync after every record. The cause was a
+  single store still on disk, the foreign-key join's internal subscription store. Kafka Streams
+  3.7 hard-codes it to RocksDB, which disassembling the library's `KTableImpl` confirmed. 3.8
+  builds it through a factory that honours the in-memory setting. With the evaluator on 3.8.1,
+  it runs at about 8,000/s, and the reports are identical line for line.
 - **The usual Avro Gradle plugin was archived in 2023**, and was last tested against Gradle 7.6.
   This project runs on Gradle 9, so it calls `avro-tools` directly through two cacheable build
   tasks instead.

@@ -8,10 +8,10 @@ Stack: Java 21, Spring Boot 3.3.5, Gradle 9.6 Kotlin DSL (matching
 `kafka-wikimedia-stream-pipeline`), Confluent Kafka Streams + Avro + Schema Registry,
 Testcontainers, Docker Compose.
 
-**Progress: stages 0–3 and 6 are done.** 38 tests pass, and each stage has been verified
-against the live Docker stack, not only in `TopologyTestDriver`. Stages 3 and 6 were verified
-with two instances. Stage 6 was pulled ahead of 4 and 5 while the stage 3 failover
-measurement was fresh.
+**Progress: stages 0–3, 6 and 7 (evaluation) are done.** 42 tests pass, and each stage has been
+verified against the live Docker stack, not only in `TopologyTestDriver`. Stages 3 and 6 were
+verified with two instances. Stages 6 and 7 were pulled ahead of 4 and 5. Stage 7's
+presentation items (GIFs, walkthrough page, deploy, CI) are still open.
 
 ---
 
@@ -168,9 +168,10 @@ kept running.
 - Topology diagram — hand-drawn in Excalidraw beats a generated one
 - The "Why Kafka Streams and not X" table
 - GIF of the dashboard with a decline firing, and a second GIF of the failover
-- **Precision/recall run** — replay all 1.85M labelled Sparkov transactions, report per-rule
-  catch rate and false-positive rate, with the honest caveat from [DATA.md](DATA.md). One of the
-  strongest items in the plan; pull it earlier if stage 6 runs long
+- ✅ **Precision/recall run** — done as the `evaluation` module: the production topology in
+  `TopologyTestDriver` over all 1.85M transactions, rather than a live replay, so it's
+  deterministic and needs no infrastructure. Results in [EVALUATION.md](EVALUATION.md) and the
+  README. Next: tune the scoring on `fraudTrain` and report `fraudTest` only.
 - A `docs/` walkthrough page, same pattern as the Wikimedia repo's GitHub Pages walkthrough
 - Deploy to `risk.wekt.in` — **check the Hetzner box has ~3 GB free first**; fallback is the
   labelled replay dashboard

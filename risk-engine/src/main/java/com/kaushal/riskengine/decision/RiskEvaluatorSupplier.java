@@ -11,8 +11,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.processor.api.Processor;
 import org.apache.kafka.streams.processor.api.ProcessorSupplier;
+import org.apache.kafka.streams.state.KeyValueBytesStoreSupplier;
 import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.Stores;
+import org.apache.kafka.streams.state.WindowBytesStoreSupplier;
 
 import java.time.Duration;
 import java.util.Set;
@@ -33,10 +35,22 @@ public class RiskEvaluatorSupplier implements ProcessorSupplier<String, Enriched
 
     private final AvroSerdes avroSerdes;
     private final MeterRegistry meterRegistry;
+    private final boolean inMemoryStores;
 
     public RiskEvaluatorSupplier(AvroSerdes avroSerdes, MeterRegistry meterRegistry) {
+        this(avroSerdes, meterRegistry, false);
+    }
+
+    /**
+     * @param inMemoryStores in-memory instead of RocksDB. Same store semantics, no disk. Used
+     *                       only by the offline evaluation, which drives the topology through
+     *                       TopologyTestDriver: that commits after every record, and each
+     *                       commit flushes RocksDB to disk - a disk flush per transaction.
+     */
+    public RiskEvaluatorSupplier(AvroSerdes avroSerdes, MeterRegistry meterRegistry, boolean inMemoryStores) {
         this.avroSerdes = avroSerdes;
         this.meterRegistry = meterRegistry;
+        this.inMemoryStores = inMemoryStores;
     }
 
     @Override
@@ -46,30 +60,23 @@ public class RiskEvaluatorSupplier implements ProcessorSupplier<String, Enriched
 
     @Override
     public Set<StoreBuilder<?>> stores() {
-        StoreBuilder<?> velocity = Stores.windowStoreBuilder(
-                Stores.persistentWindowStore(
-                        Topics.VELOCITY_STORE,
-                        RiskRules.VELOCITY_RETENTION,
-                        // Used as an append-only, time-indexed log, not as fixed windows:
-                        // each attempt is put at its own timestamp and read back by range.
-                        // The window size only has to be positive and within retention.
-                        Duration.ofMillis(1),
-                        // Keep every attempt, not just the latest per timestamp. Two
-                        // attempts in the same millisecond are two attempts.
-                        true),
-                Serdes.String(),
-                avroSerdes.<VelocityEntry>value());
+        // Used as an append-only, time-indexed log, not as fixed windows: each attempt is put
+        // at its own timestamp and read back by range. The window size only has to be positive
+        // and within retention. retainDuplicates keeps every attempt, not just the latest per
+        // timestamp: two attempts in the same millisecond are two attempts.
+        Duration windowSize = Duration.ofMillis(1);
+        WindowBytesStoreSupplier velocityStore = inMemoryStores
+                ? Stores.inMemoryWindowStore(Topics.VELOCITY_STORE, RiskRules.VELOCITY_RETENTION, windowSize, true)
+                : Stores.persistentWindowStore(Topics.VELOCITY_STORE, RiskRules.VELOCITY_RETENTION, windowSize, true);
 
-        StoreBuilder<?> spend = Stores.keyValueStoreBuilder(
-                Stores.persistentKeyValueStore(Topics.SPEND_STORE),
-                Serdes.String(),
-                avroSerdes.<DailySpend>value());
-
-        StoreBuilder<?> geo = Stores.keyValueStoreBuilder(
-                Stores.persistentKeyValueStore(Topics.GEO_STORE),
-                Serdes.String(),
-                avroSerdes.<LastSeen>value());
+        StoreBuilder<?> velocity = Stores.windowStoreBuilder(velocityStore, Serdes.String(), avroSerdes.<VelocityEntry>value());
+        StoreBuilder<?> spend = Stores.keyValueStoreBuilder(keyValue(Topics.SPEND_STORE), Serdes.String(), avroSerdes.<DailySpend>value());
+        StoreBuilder<?> geo = Stores.keyValueStoreBuilder(keyValue(Topics.GEO_STORE), Serdes.String(), avroSerdes.<LastSeen>value());
 
         return Set.of(velocity, spend, geo);
+    }
+
+    private KeyValueBytesStoreSupplier keyValue(String name) {
+        return inMemoryStores ? Stores.inMemoryKeyValueStore(name) : Stores.persistentKeyValueStore(name);
     }
 }

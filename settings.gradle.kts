@@ -9,3 +9,4 @@ rootProject.name = "kafka-streams-risk-engine"
 include("common-avro")
 include("risk-engine")
 include("traffic-generator")
+include("evaluation")

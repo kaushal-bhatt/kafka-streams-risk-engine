@@ -14,6 +14,7 @@ import org.apache.kafka.streams.kstream.Materialized;
 import org.apache.kafka.streams.kstream.Named;
 import org.apache.kafka.streams.kstream.Produced;
 import org.apache.kafka.streams.state.KeyValueStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Component;
 
@@ -33,10 +34,18 @@ public class DecisionTopology {
 
     private final AvroSerdes avroSerdes;
     private final MeterRegistry meterRegistry;
+    private final boolean inMemoryStores;
 
+    @Autowired
     public DecisionTopology(AvroSerdes avroSerdes, MeterRegistry meterRegistry) {
+        this(avroSerdes, meterRegistry, false);
+    }
+
+    /** {@code inMemoryStores} is for the offline evaluation only; see RiskEvaluatorSupplier. */
+    public DecisionTopology(AvroSerdes avroSerdes, MeterRegistry meterRegistry, boolean inMemoryStores) {
         this.avroSerdes = avroSerdes;
         this.meterRegistry = meterRegistry;
+        this.inMemoryStores = inMemoryStores;
     }
 
     @Bean
@@ -44,7 +53,7 @@ public class DecisionTopology {
         SpecificAvroSerde<Decision> decisionSerde = avroSerdes.value();
 
         KStream<String, Decision> decisions = enrichmentStream.process(
-                new RiskEvaluatorSupplier(avroSerdes, meterRegistry),
+                new RiskEvaluatorSupplier(avroSerdes, meterRegistry, inMemoryStores),
                 Named.as("risk-evaluator"));
 
         decisions.to(Topics.DECISIONS, Produced.with(Serdes.String(), decisionSerde).withName("decisions-sink"));
