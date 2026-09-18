@@ -3,7 +3,8 @@ spring:
     name: risk-engine
 
 server:
-  port: ${SERVER_PORT:8080}
+  # Not 8080: that is the port most likely to already be taken on a dev machine.
+  port: ${SERVER_PORT:8088}
 
 risk:
   application-id: risk-engine
@@ -12,7 +13,7 @@ risk:
   state-dir: ${STREAMS_STATE_DIR:./state}
   # Each instance advertises where it can be reached, so from stage 3 an Interactive
   # Query can be routed to whichever instance owns the key.
-  application-server: ${APPLICATION_SERVER:localhost:8080}
+  application-server: ${APPLICATION_SERVER:localhost:8088}
   num-standby-replicas: 0
   processing-guarantee: at_least_once
 

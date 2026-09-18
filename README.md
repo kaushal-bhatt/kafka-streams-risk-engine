@@ -107,7 +107,7 @@ running.
 Check that it is healthy (the state should be `RUNNING`):
 
 ```bash
-curl http://localhost:8080/actuator/health
+curl http://localhost:8088/actuator/health
 ```
 
 ### 3. Send some traffic
@@ -123,7 +123,7 @@ works on its own.
 
 ### 4. Look at the result
 
-Open **kafka-ui** at <http://localhost:8090>, go to **Topics → payments.enriched.v1 →
+Open **kafka-ui** at <http://localhost:8089>, go to **Topics → payments.enriched.v1 →
 Messages**. Each record now carries the transaction together with the card's daily limit, the
 customer's risk tier and the merchant's category code.
 
@@ -137,8 +137,8 @@ customer's risk tier and the merchant's category code.
 |---|---|---|
 | Kafka | `localhost:9092` | Single broker in KRaft mode (no ZooKeeper) |
 | Schema Registry | <http://localhost:8081> | Avro schemas, `BACKWARD` compatibility |
-| kafka-ui | <http://localhost:8090> | Browse topics, messages, schemas and consumer groups |
-| Risk engine | <http://localhost:8080> | Spring Boot + Kafka Streams. `/actuator/health` |
+| kafka-ui | <http://localhost:8089> | Browse topics, messages, schemas and consumer groups |
+| Risk engine | <http://localhost:8088> | Spring Boot + Kafka Streams. `/actuator/health` |
 | Postgres | `localhost:5432` | Only used from the CDC stage onwards. Start it with `docker compose --profile cdc up -d` |
 
 ```bash
@@ -233,6 +233,7 @@ rm -rf risk-engine/state
 | Engine logs `MissingSourceTopicException` | It started before `init-topics` finished. Wait for `topics ready` and restart it. |
 | Some or all transactions missing from `payments.enriched.v1` | A transaction that arrives before its card profile has been built is dropped by the inner join (a known gap, fixed in stage 2). Run the scenario again; the reference data is already in place the second time. |
 | `create-topics.sh: $'\r': command not found` | The script was checked out with Windows line endings. `.gitattributes` prevents this on a fresh clone. |
+| `Bind for 0.0.0.0:8089 failed: port is already allocated` | Something else is using the port. Pick another: `KAFKA_UI_PORT=8189 docker compose up -d`. For the engine, set `SERVER_PORT` and `APPLICATION_SERVER=localhost:<port>` together. |
 | Engine can't connect to `localhost:9092` | Docker isn't running, or Kafka hasn't finished starting. Check with `docker compose ps`. |
 
 ---

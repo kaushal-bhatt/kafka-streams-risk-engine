@@ -74,7 +74,9 @@ services:
       kafka:
         condition: service_healthy
     ports:
-      - "8090:8080"
+      # 8089 rather than the usual 8080/8090, which are the ports most likely to be taken
+      # by something else on a dev machine. Override with KAFKA_UI_PORT=... if 8089 is too.
+      - "${KAFKA_UI_PORT:-8089}:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: "risk-engine"
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:29092"

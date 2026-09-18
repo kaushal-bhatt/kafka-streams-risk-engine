@@ -21,7 +21,7 @@ public record RiskEngineProperties(
          * Advertised host:port of this instance, used by Interactive Queries from stage 3 to
          * route a request to whichever instance owns the key's partition.
          */
-        @DefaultValue("localhost:8080") String applicationServer,
+        @DefaultValue("localhost:8088") String applicationServer,
 
         /**
          * Stage 6 raises this to 1 so a second instance keeps a warm copy of every store and
