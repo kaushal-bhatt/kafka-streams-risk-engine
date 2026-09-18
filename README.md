@@ -1,5 +1,9 @@
 # kafka-streams-risk-engine
 
+[![CI](https://github.com/kaushal-bhatt/kafka-streams-risk-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/kaushal-bhatt/kafka-streams-risk-engine/actions/workflows/ci.yml)
+![Java 21](https://img.shields.io/badge/Java-21-blue)
+![Kafka Streams](https://img.shields.io/badge/Kafka%20Streams-3.7-black)
+
 A real-time card-payment risk engine built on **Kafka Streams**. Every authorisation is scored
 against state that is already materialised in local state stores, so no database sits on the
 hot path.
