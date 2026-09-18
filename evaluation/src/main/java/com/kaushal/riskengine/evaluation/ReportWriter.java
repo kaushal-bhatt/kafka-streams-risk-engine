@@ -35,9 +35,9 @@ final class ReportWriter {
                 + "gives the same numbers.\n");
         md.append("- **Labels:** each transaction's `is_fraud` travels through the pipeline in `labelledFraud` and comes "
                 + "back on the engine's `Decision`. What's scored is what the engine emitted.\n");
-        md.append("- **Thresholds:** as in `RiskRules`, with policy `%s` (`RiskPolicy`). See the README for how the "
+        md.append("- **Thresholds:** as in `RiskRules`, with policy `%s` (`RiskPolicy`). How the policy was chosen, "
                 .formatted(result.policy())
-                + "policy was chosen: on `fraudTrain` only.\n");
+                + "on `fraudTrain` only, is in [TUNING.md](TUNING.md).\n");
         md.append("- **Run time:** %s for %s transactions (%s/s).\n\n"
                 .formatted(duration(result.elapsed().toSeconds()), n(result.rows()),
                         n(Math.round(result.rows() / Math.max(1e-9, result.elapsed().toNanos() / 1e9)))));
@@ -99,7 +99,8 @@ final class ReportWriter {
                 - **Amounts are the dataset's own (USD).** The engine labels them EUR; rule thresholds such as the \
                 2.00 card-testing ceiling apply to the number as given.
                 - **Sparkov scatters merchant locations** up to roughly 100 km around each transaction, so \
-                `GEO_VELOCITY`'s false positives here partly measure that scatter.
+                the impossible-travel rules' (`GEO_VELOCITY`, `GEO_SHORT_HOP`) false positives here partly measure \
+                that scatter.
                 - **Only `fraudTest` numbers are unbiased** for any policy chosen by evaluating on `fraudTrain`. The \
                 `fraudTrain` rows describe the data the choice was made on.
                 """);

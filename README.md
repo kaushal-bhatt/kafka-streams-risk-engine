@@ -14,9 +14,10 @@ in KRaft mode.
 > - Any card's full risk picture can be queried over HTTP straight from the engine's state.
 > - Processing is exactly-once.
 > - Reads survive an instance being killed.
-> - The rules are **measured against 1.85M labelled transactions**. They catch 89% of
->   fraud-hit cards and stop 54% of fraud by value, and the measurement also shows exactly
->   where they fail. See [Evaluation](#evaluation-measured-against-185m-labelled-transactions).
+> - The rules are **measured against 1.85M labelled transactions**, and then **tuned with a
+>   pre-registered train/test method**. The result cut wrongly declined customers by 64.5% on
+>   unseen data, with no loss of fraud caught. See
+>   [Evaluation](#evaluation-measured-against-185m-labelled-transactions).
 >
 > See the [roadmap](#roadmap) for what is planned. Nothing below claims a feature that isn't in
 > the code, and every number below was measured.
@@ -92,7 +93,8 @@ one range scan of the window store to answer both the velocity rule and the card
 | `VELOCITY` | More than 5 attempts on one card in 60 s | 45 |
 | `CARD_TESTING` | 4 or more attempts under €2 across 3 or more merchants in 10 min | 60 |
 | `DAILY_LIMIT` | This transaction would take the card past its daily limit | 80 |
-| `GEO_VELOCITY` | Implied speed since the last location is over 900 km/h (ignored under 100 km) | 80 |
+| `GEO_VELOCITY` | Implied speed since the last location is over 900 km/h, across 500 km or more | 80 |
+| `GEO_SHORT_HOP` | The same impossible speed across 100–500 km, where location noise is a plausible cause | 45 |
 | `MERCHANT_RISK` | Gambling, quasi-cash, money-transfer or card-not-present category | 20 |
 | `UNKNOWN_CARD` | The card isn't in the reference data | 50 |
 | `CARD_NOT_ACTIVE` | The card is blocked or expired | 100 |
@@ -303,53 +305,74 @@ on the engine's own `Decision`, so what's scored is exactly what the engine emit
 under 4 minutes and is deterministic: the same data always gives the same numbers. The full
 generated report is in [docs/EVALUATION.md](docs/EVALUATION.md).
 
-| | All 1.85M | Test period only |
+### The result, on data the tuning never saw
+
+| Test period (`fraudTest`, 555,719 transactions) | Before tuning | **After tuning** |
 |---|---:|---:|
-| Fraud-hit cards caught | **872 of 976 (89.3%)** | |
-| Fraud **amount** stopped | **$2.78M of $5.12M (54.4%)** | 54.7% |
-| Fraudulent transactions stopped (recall) | 35.5% | 35.9% |
-| Declines that were fraud (precision) | 7.9% | 5.3% |
-| Legitimate purchases declined (false-positive rate) | 2.2% | 2.5% |
+| Legitimate purchases declined | 13,727 | **4,868 (−64.5%)** |
+| Decline precision | 5.3% | **13.3%** |
+| Fraud declined **or** sent to review | 35.9% | **36.6%** |
+| Fraud amount declined | 54.7% | 54.2% |
 
-The rules stop over half the fraud by value from just over a third of the fraudulent
-transactions, because they catch the large ones. Recall is stable between the training and
-test periods (35.4% against 35.9%). Precision is lower in the test period because fraud itself
-is rarer there (0.39% against 0.58%), not because the rules got worse.
+Across all 1.85M transactions, the engine catches **872 of 976 fraud-hit cards (89.3%)** and
+stops **54% of fraud by value** from about 35% of fraudulent transactions: it catches the large
+ones.
 
-### What the measurement found
+How it got from "before" to "after" is the more useful part.
 
-**One rule causes most of the damage.** `GEO_VELOCITY` fired on 28,630 transactions, and
-98.9% of them were legitimate. That's **71% of all false declines**, in return for 3.3% of the
-fraud caught. The cause is in the data: Sparkov places each merchant up to ~100 km from the
-cardholder, independently per transaction, so two purchases minutes apart routinely look like
-impossible travel. The rule works as designed on real impossible travel (10,000 km in 4
-minutes, as in the demo). It was never designed for location data this noisy. Without it,
-precision would roughly triple, to about 21%, for about 2 points of recall. That's an estimate:
-removing it would also change which amounts count toward daily spend.
+### 1. The first evaluation found one rule doing most of the damage
 
-**One rule does most of the work.** `DAILY_LIMIT` fired on 15,075 transactions with 21.4%
-precision, **41× better than random**, and caught a third of all fraud. This dataset's fraud
-comes as bursts of large purchases. The caveat is real: Sparkov has no limits, so they're
-assigned per card. What's validated is the *signal*, unusually high spend today. The exact
-numbers depend on the invented limits.
+`GEO_VELOCITY` fired on 28,630 transactions, and 98.9% of them were legitimate. That was **71%
+of all false declines**, for 3.3% of the fraud caught. Sparkov places each merchant up to
+~100 km from the cardholder, independently per transaction, so two purchases minutes apart
+routinely look like impossible travel. The rule did exactly what it was built for. It had just
+never met location data this noisy.
 
-**Two rules were never exercised.** `VELOCITY` and `CARD_TESTING` didn't fire once in 1.85M
-transactions, because this dataset's fraud isn't rapid-fire or small-amount. The evaluation
-says nothing about them either way; the scripted scenarios and unit tests do.
+The same run showed the rest of the picture:
 
-**The REVIEW band went unused.** Every rule that fired here scores either 80 (decline) or at
-most 30 (approve). So there were zero REVIEW decisions: no middle ground where a low-precision
-signal like `GEO_VELOCITY` could send a transaction to a human instead of blocking it. That's a
-scoring design gap, and fixing it is the obvious next experiment. It has to be done as tuning
-on `fraudTrain` with the result reported on `fraudTest` alone, or the number is fitted to its
-own test set.
+- **`DAILY_LIMIT` does most of the work**, at 40× better than random, catching a third of all
+  fraud. This dataset's fraud comes as bursts of large purchases. Sparkov has no card limits,
+  so they're invented per card. What's validated is the signal, unusually high spend today,
+  not the exact numbers.
+- **`VELOCITY` and `CARD_TESTING` never fired once**, because this fraud isn't rapid-fire or
+  small-amount. The evaluation says nothing about them; the scripted scenarios test them.
+- **The REVIEW band went unused.** Every rule that fired scored 80 (decline) or at most 30
+  (approve), so there was nowhere to send a doubtful case except "block".
+
+### 2. The fix was pre-registered, tuned on training data, and judged on test data
+
+The hypothesis: impossible travel is **certain** across a continent, and **ambiguous** across a
+region, where a mis-registered merchant location explains it. So `GEO_VELOCITY` keeps its
+decline for 500 km and over. Shorter impossible hops become `GEO_SHORT_HOP`, which sends the
+transaction to REVIEW instead of blocking it.
+
+Four variants and a selection rule were **committed to git before any tuning run**
+([docs/TUNING.md](docs/TUNING.md), commit `615197c`):
+- **Objective:** the fewest false declines.
+- **Constraint:** lose no more than 1 point of fraud caught (declined or reviewed).
+- **Tie-break:** the smaller review queue.
+
+The variants ran on `fraudTrain` only. The one with the fewest false declines missed the
+constraint by 0.08 points and was rejected, as the rule says. The winner then ran once on
+`fraudTest`, for the table above.
+
+### 3. The cost is reported with the gain
+
+The 9,221 test-period reviews the change creates contain 40 frauds: **1 in 231**. Short hops
+are weak evidence, even as a REVIEW. The pre-registered rule said "don't lose fraud", so this
+is the right pick under it. Whether 230 reviews per extra fraud found is worth paying for is a
+business decision, and the next experiment would put a price on reviews. Transactions that are
+no longer wrongly declined now count toward daily spend, so `DAILY_LIMIT` catches a few more
+frauds later on. The rules interact through state, not in isolation.
 
 ```bash
 ./gradlew :evaluation:run
 ```
 
 This needs the two CSVs in `data/` (see [docs/DATA.md](docs/DATA.md)) and writes
-`docs/EVALUATION.md`.
+`docs/EVALUATION.md`. Tuning runs use
+`--files=fraudTrain --geo-certain-km=... --geo-short-hop-score=...`, so the test file is
+never read.
 
 Also in place:
 
@@ -540,7 +563,7 @@ docker exec -it risk-schema-registry kafka-avro-console-consumer --bootstrap-ser
 ./gradlew test
 ```
 
-42 tests, none of which need running infrastructure. The topology tests drive
+45 tests, none of which need running infrastructure. The topology tests drive
 `TopologyTestDriver` with an in-memory mock Schema Registry. The query tests read the same
 stores back out, and check the routing logic against a mocked second instance:
 
@@ -645,8 +668,9 @@ crash-loops with `Schema N not found; error code: 40403` the first time it reads
       standby replicas with measured failover, a live schema evolution, Prometheus metrics.
       A Grafana dashboard is not built yet.
 - [x] **Stage 7: Evaluation.** The rules measured against 1.85M labelled transactions with the
-      production topology, reproducible in under 4 minutes. Next: tune the scoring on
-      `fraudTrain`, report on `fraudTest`.
+      production topology, reproducible in under 4 minutes. Then a pre-registered tuning of
+      `GEO_VELOCITY`, chosen on `fraudTrain` and judged on `fraudTest`: 64.5% fewer false
+      declines. Next: a selection rule that prices review-queue cost.
 
 The full plan is in [docs/BUILD-PLAN.md](docs/BUILD-PLAN.md).
 
@@ -687,6 +711,7 @@ kafka-streams-risk-engine/
     ├── BUILD-PLAN.md     Staged plan and progress
     ├── DATA.md           Test data: the scripted scenarios and the labelled dataset
     ├── EVALUATION.md     Generated evaluation report (precision, recall, per-rule, per-card)
+    ├── TUNING.md         Pre-registered tuning: candidates, selection rule, train and test results
     └── NOTES.md          Things that broke, and why
 ```
 

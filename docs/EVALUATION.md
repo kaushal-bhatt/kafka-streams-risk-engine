@@ -8,8 +8,8 @@ Every number in this file is written by the evaluator; re-run it rather than edi
 - **Data:** [Sparkov credit card transactions](https://www.kaggle.com/datasets/kartik2112/fraud-detection) (`fraudTrain.csv`, `fraudTest.csv`). 1,852,394 transactions on 999 cards across 693 merchants.
 - **Engine:** the production topology (`EnrichmentTopology` + `DecisionTopology`, the same classes the live engine runs) hosted in `TopologyTestDriver`, fed in event-time order. Deterministic: the same data gives the same numbers.
 - **Labels:** each transaction's `is_fraud` travels through the pipeline in `labelledFraud` and comes back on the engine's `Decision`. What's scored is what the engine emitted.
-- **Thresholds:** exactly as in `RiskRules`. Chosen for the scripted demo scenarios and not tuned on this data.
-- **Run time:** 3m 50s for 1,852,394 transactions (8,025/s).
+- **Thresholds:** as in `RiskRules`, with policy `geoCertainDistanceKm=500, geoShortHopScore=45` (`RiskPolicy`). How the policy was chosen, on `fraudTrain` only, is in [TUNING.md](TUNING.md).
+- **Run time:** 3m 46s for 1,852,394 transactions (8,184/s).
 
 ## Dataset
 
@@ -25,9 +25,9 @@ A false positive here is a legitimate purchase that fails at the till.
 
 | Period | Precision | Recall | F1 | False-positive rate | Fraud amount stopped | TP | FP | FN |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| fraudTrain | 9.2% | 35.4% | 0.147 | 2.0% | $2,164,890 (54.3%) | 2,660 | 26,124 | 4,846 |
-| fraudTest | 5.3% | 35.9% | 0.092 | 2.5% | $619,942 (54.7%) | 769 | 13,727 | 1,376 |
-| **all** | 7.9% | 35.5% | 0.130 | 2.2% | $2,784,832 (54.4%) | 3,429 | 39,851 | 6,222 |
+| fraudTrain | 22.8% | 33.9% | 0.273 | 0.67% | $2,137,001 (53.6%) | 2,547 | 8,627 | 4,959 |
+| fraudTest | 13.3% | 34.7% | 0.192 | 0.88% | $614,407 (54.2%) | 744 | 4,868 | 1,401 |
+| **all** | 19.6% | 34.1% | 0.249 | 0.73% | $2,751,408 (53.7%) | 3,291 | 13,495 | 6,360 |
 
 ## Flagged (REVIEW or DECLINE)
 
@@ -35,9 +35,9 @@ What a fraud team's review queue would contain.
 
 | Period | Precision | Recall | F1 | False-positive rate | Fraud amount stopped | TP | FP | FN |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| fraudTrain | 9.2% | 35.4% | 0.147 | 2.0% | $2,164,890 (54.3%) | 2,660 | 26,124 | 4,846 |
-| fraudTest | 5.3% | 35.9% | 0.092 | 2.5% | $619,942 (54.7%) | 769 | 13,727 | 1,376 |
-| **all** | 7.9% | 35.5% | 0.130 | 2.2% | $2,784,832 (54.4%) | 3,429 | 39,851 | 6,222 |
+| fraudTrain | 9.2% | 35.8% | 0.146 | 2.1% | $2,184,510 (54.8%) | 2,690 | 26,633 | 4,816 |
+| fraudTest | 5.3% | 36.6% | 0.092 | 2.5% | $629,739 (55.6%) | 784 | 14,049 | 1,361 |
+| **all** | 7.9% | 36.0% | 0.129 | 2.2% | $2,814,249 (55.0%) | 3,474 | 40,682 | 6,177 |
 
 ## Per rule (all periods)
 
@@ -46,9 +46,9 @@ Each rule scored on its own: of the transactions it fired on, how many were frau
 | Rule | Fires on | Of which fraud | Precision | Lift | Share of all fraud it fires on |
 |---|---:|---:|---:|---:|---:|
 | `MERCHANT_RISK` | 235,408 | 3,383 | 1.4% | 2.8× | 35.1% |
-| `CUSTOMER_RISK_TIER` | 85,976 | 1,473 | 1.7% | 3.3× | 15.3% |
-| `GEO_VELOCITY` | 28,630 | 319 | 1.1% | 2.1× | 3.3% |
-| `DAILY_LIMIT` | 15,075 | 3,232 | 21.4% | 41.2× | 33.5% |
+| `CUSTOMER_RISK_TIER` | 86,195 | 1,478 | 1.7% | 3.3× | 15.3% |
+| `GEO_SHORT_HOP` | 28,973 | 325 | 1.1% | 2.2× | 3.4% |
+| `DAILY_LIMIT` | 15,640 | 3,274 | 20.9% | 40.2× | 33.9% |
 
 ## Cards
 
@@ -60,12 +60,12 @@ Each rule scored on its own: of the transactions it fired on, how many were frau
 
 | APPROVE | REVIEW | DECLINE |
 |---:|---:|---:|
-| 1,809,114 | 0 | 43,280 |
+| 1,808,238 | 27,370 | 16,786 |
 
 ## Caveats
 
 - **The fraud is simulated.** Sparkov injects fraud with a known generative process. These numbers measure how well the rules match *that* process, not real-world fraud.
 - **Daily limits and risk tiers are invented.** Sparkov has neither, so the evaluation assigns them deterministically per card (`SparkovMapping.cardholder`). Whatever `DAILY_LIMIT` and `CUSTOMER_RISK_TIER` score here says more about those invented values than about fraud.
 - **Amounts are the dataset's own (USD).** The engine labels them EUR; rule thresholds such as the 2.00 card-testing ceiling apply to the number as given.
-- **Sparkov scatters merchant locations** up to roughly 100 km around each transaction, so `GEO_VELOCITY`'s false positives here partly measure that scatter.
-- **Thresholds were not tuned on this data.** If they are, tune on `fraudTrain` and report `fraudTest` only, or the headline number is fitted to its own test set.
+- **Sparkov scatters merchant locations** up to roughly 100 km around each transaction, so the impossible-travel rules' (`GEO_VELOCITY`, `GEO_SHORT_HOP`) false positives here partly measure that scatter.
+- **Only `fraudTest` numbers are unbiased** for any policy chosen by evaluating on `fraudTrain`. The `fraudTrain` rows describe the data the choice was made on.

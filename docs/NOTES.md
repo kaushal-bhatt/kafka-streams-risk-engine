@@ -76,6 +76,15 @@ speed-up changed nothing but the speed.
 Lesson: after the first wrong guess, measure. Two fixes based on reasoning cost two runs; one
 set of thread dumps found the answer.
 
+## Stage 7: the tuning, and the number I nearly argued with
+
+The full method and numbers are in [TUNING.md](TUNING.md). The moment worth remembering: the
+variant with the fewest false declines (V3) failed the pre-registered constraint by **0.08
+points** of recall. It would have been easy to say "0.08 is noise, take V3". But that's exactly
+the move pre-registration exists to prevent. Once the rule bends for a small margin, it's no
+longer a rule, and the test number is no longer a test. V1 was chosen, and V3's case is written
+up as the next experiment, which needs its own pre-registered rule that prices review cost.
+
 ## Stage 7: what the evaluation showed about the rules
 
 See the README's Evaluation section for the numbers. The one to remember is that

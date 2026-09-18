@@ -171,7 +171,11 @@ kept running.
 - ✅ **Precision/recall run** — done as the `evaluation` module: the production topology in
   `TopologyTestDriver` over all 1.85M transactions, rather than a live replay, so it's
   deterministic and needs no infrastructure. Results in [EVALUATION.md](EVALUATION.md) and the
-  README. Next: tune the scoring on `fraudTrain` and report `fraudTest` only.
+  README.
+- ✅ **Pre-registered tuning** of `GEO_VELOCITY` ([TUNING.md](TUNING.md)): candidates and
+  selection rule committed before any run, chosen on `fraudTrain`, judged on `fraudTest`.
+  64.5% fewer false declines with no loss of fraud caught; the review-queue cost is reported
+  too. Next: a selection rule that prices reviews.
 - A `docs/` walkthrough page, same pattern as the Wikimedia repo's GitHub Pages walkthrough
 - Deploy to `risk.wekt.in` — **check the Hetzner box has ~3 GB free first**; fallback is the
   labelled replay dashboard
