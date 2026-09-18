@@ -1,0 +1,12 @@
+# Normalise line endings in the repo, whatever the contributor's platform.
+* text=auto
+
+# Shell scripts run inside Linux containers and on macOS/Linux hosts. A CRLF here fails
+# with "$'\r': command not found" - so force LF even on a Windows checkout.
+*.sh    text eol=lf
+gradlew text eol=lf
+
+# Windows batch files need CRLF.
+*.bat   text eol=crlf
+
+*.jar   binary

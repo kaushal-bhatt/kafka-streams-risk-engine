@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: risk-engine
+
+server:
+  port: ${SERVER_PORT:8080}
+
+risk:
+  application-id: risk-engine
+  bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  schema-registry-url: ${SCHEMA_REGISTRY_URL:http://localhost:8081}
+  state-dir: ${STREAMS_STATE_DIR:./state}
+  # Each instance advertises where it can be reached, so from stage 3 an Interactive
+  # Query can be routed to whichever instance owns the key.
+  application-server: ${APPLICATION_SERVER:localhost:8080}
+  num-standby-replicas: 0
+  processing-guarantee: at_least_once
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    org.apache.kafka.streams: INFO
+    com.kaushal.riskengine: DEBUG

@@ -1,0 +1,121 @@
+/**
+ * Every record on every topic in this project.
+ *
+ * Written as a single Avro IDL file rather than a directory of .avsc files so that
+ * cross-record references (CardProfile embeds CardStatus, EnrichedTransaction embeds
+ * Transaction) resolve without duplicating type definitions.
+ *
+ * Generated into Java by the `generateAvroJava` task — see build.gradle.kts.
+ * Run `./gradlew :common-avro:generateAvroSchemas` to emit the equivalent .avsc files
+ * for registration or inspection.
+ */
+@namespace("com.kaushal.riskengine.avro")
+protocol RiskModel {
+
+  /** Enum defaults matter: they are what lets a consumer on an older schema survive a
+      symbol being added later. */
+  enum CardStatus { ACTIVE, BLOCKED, EXPIRED } = ACTIVE;
+
+  enum RiskTier { LOW, MEDIUM, HIGH } = LOW;
+
+  enum DecisionType { APPROVE, REVIEW, DECLINE } = REVIEW;
+
+  /** An authorisation request. Keyed by cardId on payments.transactions.v1 so that
+      per-card ordering holds and the card's state stores live on one partition. */
+  record Transaction {
+    string transactionId;
+    string cardId;
+    string merchantId;
+    /** Minor units (cents). Money is never a float. */
+    long amountMinor;
+    string currency = "EUR";
+    /** When the terminal saw it, not when Kafka received it. Drives the TimestampExtractor. */
+    timestamp_ms eventTime;
+    double lat;
+    double lon;
+    /** Merchant category as reported at the point of sale, where available. */
+    union { null, string } category = null;
+    /** Ground-truth label, present only when replaying a labelled dataset.
+        Carried through to Decision so precision/recall can be computed downstream. */
+    union { null, boolean } labelledFraud = null;
+  }
+
+  /** Reference data, compacted topic, sourced from Postgres via CDC. */
+  record Card {
+    string cardId;
+    string customerId;
+    CardStatus status = "ACTIVE";
+    long dailyLimitMinor;
+    string currency = "EUR";
+  }
+
+  record Customer {
+    string customerId;
+    RiskTier riskTier = "LOW";
+    string homeCountry;
+    double homeLat;
+    double homeLon;
+  }
+
+  record Merchant {
+    string merchantId;
+    string name;
+    /** Merchant category code, or the dataset's category label. */
+    string mcc;
+    string country;
+    double lat;
+    double lon;
+  }
+
+  /** Card joined to its customer, materialised once per card change rather than
+      once per transaction. Keyed by cardId, co-partitioned with the transaction stream. */
+  record CardProfile {
+    string cardId;
+    string customerId;
+    CardStatus status = "ACTIVE";
+    long dailyLimitMinor;
+    string currency = "EUR";
+    RiskTier riskTier = "LOW";
+    string homeCountry;
+    double homeLat;
+    double homeLon;
+  }
+
+  /** Output of the enrichment stage, before any rule has run. */
+  record EnrichedTransaction {
+    Transaction transaction;
+    CardProfile cardProfile;
+    /** Null when the merchant is not yet in the GlobalKTable. The rules must cope
+        with this rather than assume it is populated. */
+    union { null, Merchant } merchant = null;
+  }
+
+  /** One rule firing, with enough detail to explain the decision to a human. */
+  record RuleHit {
+    string rule;
+    int score;
+    string detail;
+  }
+
+  record Decision {
+    string transactionId;
+    string cardId;
+    string merchantId;
+    DecisionType decision = "REVIEW";
+    int score;
+    array<RuleHit> reasons = [];
+    long amountMinor;
+    timestamp_ms evaluatedAt;
+    union { null, boolean } labelledFraud = null;
+  }
+
+  /** Windowed decline rate per merchant, emitted once per closed window. */
+  record MerchantStats {
+    string merchantId;
+    long total;
+    long declined;
+    double declineRate;
+    timestamp_ms windowStart;
+    timestamp_ms windowEnd;
+  }
+}

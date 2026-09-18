@@ -1,0 +1,14 @@
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+.idea/
+*.iml
+out/
+
+# Sparkov CSVs are several hundred MB. Fetch them with scripts/fetch-data.sh instead.
+data/
+
+# Kafka Streams local RocksDB state (bootRun creates risk-engine/state/)
+state/
+*.log

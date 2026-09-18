@@ -1,0 +1,168 @@
+package com.kaushal.riskengine.topology;
+
+import com.kaushal.riskengine.Topics;
+import com.kaushal.riskengine.avro.Card;
+import com.kaushal.riskengine.avro.CardProfile;
+import com.kaushal.riskengine.avro.Customer;
+import com.kaushal.riskengine.avro.EnrichedTransaction;
+import com.kaushal.riskengine.avro.Merchant;
+import com.kaushal.riskengine.avro.Transaction;
+import com.kaushal.riskengine.config.AvroSerdes;
+import io.confluent.kafka.streams.serdes.avro.SpecificAvroSerde;
+import org.apache.kafka.common.serialization.Serde;
+import org.apache.kafka.common.serialization.Serdes;
+import org.apache.kafka.common.utils.Bytes;
+import org.apache.kafka.streams.StreamsBuilder;
+import org.apache.kafka.streams.kstream.Consumed;
+import org.apache.kafka.streams.kstream.GlobalKTable;
+import org.apache.kafka.streams.kstream.Joined;
+import org.apache.kafka.streams.kstream.KStream;
+import org.apache.kafka.streams.kstream.KTable;
+import org.apache.kafka.streams.kstream.Materialized;
+import org.apache.kafka.streams.kstream.Named;
+import org.apache.kafka.streams.kstream.Produced;
+import org.apache.kafka.streams.kstream.TableJoined;
+import org.apache.kafka.streams.state.KeyValueStore;
+import org.springframework.context.annotation.Bean;
+import org.springframework.stereotype.Component;
+
+/**
+ * Stage 1 - enrichment.
+ *
+ * <p>Three different join types, each chosen for a reason. That reasoning is the point of
+ * this class; any of the three would technically "work" in the other two positions.
+ *
+ * <pre>
+ *   cards JOIN customers            KTable-KTable foreign-key join -&gt; cardProfiles
+ *   transactions JOIN cardProfiles  KStream-KTable, co-partitioned
+ *   ... JOIN merchants              KStream-GlobalKTable, by a key extractor
+ * </pre>
+ */
+@Component
+public class EnrichmentTopology {
+
+    private final AvroSerdes avroSerdes;
+
+    public EnrichmentTopology(AvroSerdes avroSerdes) {
+        this.avroSerdes = avroSerdes;
+    }
+
+    @Bean
+    public KStream<String, EnrichedTransaction> enrichmentStream(StreamsBuilder builder) {
+        Serde<String> stringSerde = Serdes.String();
+
+        SpecificAvroSerde<Card> cardSerde = avroSerdes.value();
+        SpecificAvroSerde<Customer> customerSerde = avroSerdes.value();
+        SpecificAvroSerde<Merchant> merchantSerde = avroSerdes.value();
+        SpecificAvroSerde<CardProfile> cardProfileSerde = avroSerdes.value();
+        SpecificAvroSerde<Transaction> transactionSerde = avroSerdes.value();
+        SpecificAvroSerde<EnrichedTransaction> enrichedSerde = avroSerdes.value();
+
+        // --- Reference data -------------------------------------------------------------
+
+        KTable<String, Card> cards = builder.table(
+                Topics.CARDS,
+                Consumed.with(stringSerde, cardSerde).withName("cards-source"),
+                Materialized.<String, Card, KeyValueStore<Bytes, byte[]>>as(Topics.CARDS_STORE)
+                        .withKeySerde(stringSerde)
+                        .withValueSerde(cardSerde)
+        );
+
+        KTable<String, Customer> customers = builder.table(
+                Topics.CUSTOMERS,
+                Consumed.with(stringSerde, customerSerde).withName("customers-source"),
+                Materialized.<String, Customer, KeyValueStore<Bytes, byte[]>>as(Topics.CUSTOMERS_STORE)
+                        .withKeySerde(stringSerde)
+                        .withValueSerde(customerSerde)
+        );
+
+        // Join the *tables*, not the stream.
+        //
+        // A card's customer changes almost never; transactions arrive constantly. Doing
+        // this join on the table side pays the cost once per card change. Carrying the
+        // customer onto each transaction instead would mean a foreign-key lookup on every
+        // authorisation, inside the latency budget that this whole project exists to
+        // protect.
+        KTable<String, CardProfile> cardProfiles = cards.join(
+                customers,
+                Card::getCustomerId,
+                EnrichmentTopology::toCardProfile,
+                TableJoined.as("card-customer-fk"),
+                Materialized.<String, CardProfile, KeyValueStore<Bytes, byte[]>>as(Topics.CARD_PROFILE_STORE)
+                        .withKeySerde(stringSerde)
+                        .withValueSerde(cardProfileSerde)
+        );
+
+        // Merchants are a GlobalKTable rather than a KTable.
+        //
+        // A KStream-KTable join requires co-partitioning: the stream must already be keyed
+        // by the table's key. This stream is keyed by cardId, so joining a partitioned
+        // merchant table would force a rekey to merchantId and a repartition topic - a
+        // broker round trip added to every authorisation, just to look up a category code.
+        //
+        // A GlobalKTable is replicated in full to every instance and can be joined by any
+        // key extractor with no repartition. The costs are memory and the fact that global
+        // tables are not time-synchronised with the stream. Both are fine here: the
+        // merchant table is small and near-static.
+        GlobalKTable<String, Merchant> merchants = builder.globalTable(
+                Topics.MERCHANTS,
+                Consumed.with(stringSerde, merchantSerde).withName("merchants-source"),
+                Materialized.<String, Merchant, KeyValueStore<Bytes, byte[]>>as(Topics.MERCHANT_STORE)
+                        .withKeySerde(stringSerde)
+                        .withValueSerde(merchantSerde)
+        );
+
+        // --- The stream -----------------------------------------------------------------
+
+        KStream<String, Transaction> transactions = builder.stream(
+                Topics.TRANSACTIONS,
+                Consumed.with(stringSerde, transactionSerde).withName("transactions-source")
+        );
+
+        // Inner join: a transaction for a card we have never seen is dropped.
+        //
+        // TODO(stage-2): that is the wrong behaviour for a risk engine. An unknown card is
+        // itself a signal and should produce a REVIEW decision with an UNKNOWN_CARD reason,
+        // not vanish. Left as an inner join here so stage 1 stays small, but it must not
+        // ship this way.
+        KStream<String, EnrichedTransaction> enriched = transactions
+                .join(
+                        cardProfiles,
+                        (transaction, profile) -> EnrichedTransaction.newBuilder()
+                                .setTransaction(transaction)
+                                .setCardProfile(profile)
+                                .build(),
+                        Joined.with(stringSerde, transactionSerde, cardProfileSerde)
+                                .withName("transaction-card-join")
+                )
+                .leftJoin(
+                        merchants,
+                        (cardId, enrichedTransaction) -> enrichedTransaction.getTransaction().getMerchantId(),
+                        // leftJoin, so a merchant missing from the global table yields null
+                        // rather than dropping the authorisation. The rules downstream have
+                        // to cope with a null merchant instead of assuming it is populated.
+                        (enrichedTransaction, merchant) -> EnrichedTransaction.newBuilder(enrichedTransaction)
+                                .setMerchant(merchant)
+                                .build(),
+                        Named.as("transaction-merchant-join")
+                );
+
+        enriched.to(Topics.ENRICHED, Produced.with(stringSerde, enrichedSerde).withName("enriched-sink"));
+
+        return enriched;
+    }
+
+    private static CardProfile toCardProfile(Card card, Customer customer) {
+        return CardProfile.newBuilder()
+                .setCardId(card.getCardId())
+                .setCustomerId(card.getCustomerId())
+                .setStatus(card.getStatus())
+                .setDailyLimitMinor(card.getDailyLimitMinor())
+                .setCurrency(card.getCurrency())
+                .setRiskTier(customer.getRiskTier())
+                .setHomeCountry(customer.getHomeCountry())
+                .setHomeLat(customer.getHomeLat())
+                .setHomeLon(customer.getHomeLon())
+                .build();
+    }
+}
