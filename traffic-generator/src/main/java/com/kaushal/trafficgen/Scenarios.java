@@ -28,14 +28,23 @@ public class Scenarios {
         this.reference = reference;
     }
 
+    /** How long to let the engine build card profiles before sending transactions. */
+    private static final long REFERENCE_SETTLE_MILLIS = 3_000;
+
     /** Publishes the compacted reference topics. Stage 5 hands this job to Debezium. */
-    public void seed() {
+    public void seed() throws InterruptedException {
         reference.customers().forEach(c -> publisher.send(Topics.CUSTOMERS, c.getCustomerId(), c));
         reference.cards().forEach(c -> publisher.send(Topics.CARDS, c.getCardId(), c));
         reference.merchants().forEach(m -> publisher.send(Topics.MERCHANTS, m.getMerchantId(), m));
         publisher.flush();
         System.out.printf("seeded %d customers, %d cards, %d merchants%n",
                 reference.customers().size(), reference.cards().size(), reference.merchants().size());
+
+        // A card profile is built by a foreign-key join that makes a round trip through two
+        // internal topics. Sub-second with caching disabled on the reference stores, but a
+        // transaction sent in the same instant can still beat it and be dropped by the inner
+        // join. A short pause keeps the demo deterministic. See docs/NOTES.md.
+        Thread.sleep(REFERENCE_SETTLE_MILLIS);
     }
 
     /**

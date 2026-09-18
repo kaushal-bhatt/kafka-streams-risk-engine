@@ -231,7 +231,8 @@ rm -rf risk-engine/state
 | Symptom | Cause |
 |---|---|
 | Engine logs `MissingSourceTopicException` | It started before `init-topics` finished. Wait for `topics ready` and restart it. |
-| Some or all transactions missing from `payments.enriched.v1` | A transaction that arrives before its card profile has been built is dropped by the inner join (a known gap, fixed in stage 2). Run the scenario again; the reference data is already in place the second time. |
+| Some transactions missing from `payments.enriched.v1` | A transaction that arrives before its card profile has been built is dropped by the inner join. That's a known gap, fixed in stage 2. The scenarios pause briefly after seeding to avoid it. If you publish cards and transactions yourself, leave a second between them. |
+| `curl localhost:8080/...` returns something that isn't this app | The engine runs on **8088**. Port 8080 is often taken by another local project. |
 | `create-topics.sh: $'\r': command not found` | The script was checked out with Windows line endings. `.gitattributes` prevents this on a fresh clone. |
 | `Bind for 0.0.0.0:8089 failed: port is already allocated` | Something else is using the port. Pick another: `KAFKA_UI_PORT=8189 docker compose up -d`. For the engine, set `SERVER_PORT` and `APPLICATION_SERVER=localhost:<port>` together. |
 | Engine can't connect to `localhost:9092` | Docker isn't running, or Kafka hasn't finished starting. Check with `docker compose ps`. |
@@ -296,16 +297,20 @@ kafka-streams-risk-engine/
 
 A few problems from building this, written up in [docs/NOTES.md](docs/NOTES.md):
 
+- **Record caching made new cards invisible for up to 30 seconds, and every unit test
+  passed.** KTable stores are cached by default and only flush downstream on commit (every
+  30 s). A new card sat in the cache, its profile never reached the foreign-key join, and the
+  inner join dropped its transactions. No errors, no dropped-record count, nothing in the
+  logs. `TopologyTestDriver` commits after every record, so it can't show this. Found by
+  ruling out partitioning, deserialization and join logic one at a time, then timing probes
+  against a fresh card. Fixed by disabling caching on the reference stores, and verified with
+  an A/B run against the old build.
 - **The usual Avro Gradle plugin was archived in 2023**, and was last tested against Gradle 7.6.
   This project runs on Gradle 9, so it calls `avro-tools` directly through two cacheable build
   tasks instead.
 - **avro-tools writes files in the platform's default charset.** On Windows that is
   windows-1252, so a single em dash in a schema comment broke the next build step with
   `Invalid UTF-8 start byte 0x97`. The build now forces UTF-8 everywhere.
-- **Partition counts decide whether a join works.** A stream–table join only matches records
-  when both topics have the same key *and* the same number of partitions. Kafka Streams gives
-  no warning when they differ; the join simply produces nothing. That's why topics are
-  created explicitly with a single shared partition count, not auto-created.
 
 ---
 

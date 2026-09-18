@@ -59,6 +59,22 @@ public class EnrichmentTopology {
         SpecificAvroSerde<EnrichedTransaction> enrichedSerde = avroSerdes.value();
 
         // --- Reference data -------------------------------------------------------------
+        //
+        // Every reference store below has record caching DISABLED, deliberately.
+        //
+        // By default a KTable store sits behind a cache that only flushes downstream on
+        // commit - every 30 seconds under at-least-once. For the foreign-key join that
+        // means a new card is not forwarded to the join until the next commit, so its
+        // CardProfile can take up to 30s to exist. Any authorisation on that card in the
+        // meantime finds no profile and is dropped by the inner join below.
+        //
+        // TopologyTestDriver commits after every record, so the unit tests can never show
+        // this. It was found running the real stack: a transaction 13s after its card was
+        // written was dropped, and one sent after the next commit went through.
+        //
+        // Caching exists to collapse rapid updates to the same key into one downstream
+        // record. Reference data barely changes, so here it buys nothing and costs up to
+        // 30s of staleness on the one path where freshness matters.
 
         KTable<String, Card> cards = builder.table(
                 Topics.CARDS,
@@ -66,6 +82,7 @@ public class EnrichmentTopology {
                 Materialized.<String, Card, KeyValueStore<Bytes, byte[]>>as(Topics.CARDS_STORE)
                         .withKeySerde(stringSerde)
                         .withValueSerde(cardSerde)
+                        .withCachingDisabled()
         );
 
         KTable<String, Customer> customers = builder.table(
@@ -74,6 +91,7 @@ public class EnrichmentTopology {
                 Materialized.<String, Customer, KeyValueStore<Bytes, byte[]>>as(Topics.CUSTOMERS_STORE)
                         .withKeySerde(stringSerde)
                         .withValueSerde(customerSerde)
+                        .withCachingDisabled()
         );
 
         // Join the *tables*, not the stream.
@@ -91,6 +109,7 @@ public class EnrichmentTopology {
                 Materialized.<String, CardProfile, KeyValueStore<Bytes, byte[]>>as(Topics.CARD_PROFILE_STORE)
                         .withKeySerde(stringSerde)
                         .withValueSerde(cardProfileSerde)
+                        .withCachingDisabled()
         );
 
         // Merchants are a GlobalKTable rather than a KTable.
