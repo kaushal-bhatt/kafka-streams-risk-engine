@@ -14,6 +14,7 @@ import com.kaushal.riskengine.avro.RiskTier;
 import com.kaushal.riskengine.avro.RuleHit;
 import com.kaushal.riskengine.avro.Transaction;
 import com.kaushal.riskengine.avro.VelocityEntry;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.processor.PunctuationType;
 import org.apache.kafka.streams.processor.api.Processor;
@@ -71,10 +72,16 @@ public class RiskEvaluator implements Processor<String, EnrichedTransaction, Str
     private static final Logger log = LoggerFactory.getLogger(RiskEvaluator.class);
     private static final long DAY_MILLIS = Duration.ofDays(1).toMillis();
 
+    private final MeterRegistry meterRegistry;
+
     private ProcessorContext<String, Decision> context;
     private WindowStore<String, VelocityEntry> velocityStore;
     private KeyValueStore<String, DailySpend> spendStore;
     private KeyValueStore<String, LastSeen> geoStore;
+
+    public RiskEvaluator(MeterRegistry meterRegistry) {
+        this.meterRegistry = meterRegistry;
+    }
 
     @Override
     public void init(ProcessorContext<String, Decision> context) {
@@ -186,6 +193,9 @@ public class RiskEvaluator implements Processor<String, EnrichedTransaction, Str
                 .setEvaluatedAt(Instant.ofEpochMilli(context.currentSystemTimeMs()))
                 .setLabelledFraud(txn.getLabelledFraud())
                 .build();
+
+        meterRegistry.counter("risk.decisions", "decision", verdict.name()).increment();
+        hits.forEach(hit -> meterRegistry.counter("risk.rule.hits", "rule", hit.getRule()).increment());
 
         logDecision(decision, txn);
         context.forward(record.withValue(decision));

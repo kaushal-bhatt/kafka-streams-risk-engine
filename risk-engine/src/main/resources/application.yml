@@ -14,14 +14,15 @@ risk:
   # Each instance advertises where it can be reached, so from stage 3 an Interactive
   # Query can be routed to whichever instance owns the key.
   application-server: ${APPLICATION_SERVER:localhost:8088}
-  num-standby-replicas: 0
-  processing-guarantee: at_least_once
+  num-standby-replicas: ${NUM_STANDBY_REPLICAS:1}
+  # exactly_once_v2 or at_least_once. The latency probe measures the difference.
+  processing-guarantee: ${PROCESSING_GUARANTEE:exactly_once_v2}
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: always

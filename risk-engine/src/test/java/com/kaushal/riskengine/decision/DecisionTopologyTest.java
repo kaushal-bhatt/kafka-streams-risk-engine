@@ -17,6 +17,7 @@ import com.kaushal.riskengine.config.RiskEngineProperties;
 import com.kaushal.riskengine.topology.DecisionTopology;
 import com.kaushal.riskengine.topology.EnrichmentTopology;
 import io.confluent.kafka.schemaregistry.testutil.MockSchemaRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
@@ -63,6 +64,7 @@ class DecisionTopologyTest {
     @TempDir
     Path stateDir;
 
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
     private TopologyTestDriver driver;
     private TestInputTopic<String, Transaction> transactions;
     private TestOutputTopic<String, Decision> decisions;
@@ -74,7 +76,7 @@ class DecisionTopologyTest {
                 "localhost:8088", 0, "at_least_once"));
 
         StreamsBuilder builder = new StreamsBuilder();
-        new DecisionTopology(serdes).decisionStream(new EnrichmentTopology(serdes).enrichmentStream(builder));
+        new DecisionTopology(serdes, meters).decisionStream(new EnrichmentTopology(serdes).enrichmentStream(builder));
 
         Properties config = new Properties();
         config.put(StreamsConfig.APPLICATION_ID_CONFIG, "decision-test-" + UUID.randomUUID());
@@ -302,6 +304,17 @@ class DecisionTopologyTest {
             assertThat(rules(casino)).containsExactlyInAnyOrder("MERCHANT_RISK", "CUSTOMER_RISK_TIER");
             assertThat(casino.getScore()).isEqualTo(30);
         }
+    }
+
+    @Test
+    @DisplayName("every decision and every rule hit is counted for metrics")
+    void countsDecisionsAndRuleHits() {
+        send("CARD-1", BERLIN, 1_000, T0);
+        send("CARD-1", SAO_PAULO, 1_000, T0.plus(Duration.ofMinutes(4)));
+
+        assertThat(meters.counter("risk.decisions", "decision", "APPROVE").count()).isEqualTo(1);
+        assertThat(meters.counter("risk.decisions", "decision", "DECLINE").count()).isEqualTo(1);
+        assertThat(meters.counter("risk.rule.hits", "rule", "GEO_VELOCITY").count()).isEqualTo(1);
     }
 
     @Nested

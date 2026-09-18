@@ -9,6 +9,8 @@ out/
 # Sparkov CSVs are several hundred MB. Fetch them with scripts/fetch-data.sh instead.
 data/
 
-# Kafka Streams local RocksDB state (bootRun creates risk-engine/state/)
+# Kafka Streams local RocksDB state, at the repo root
 state/
+# A second local instance needs its own state directory (see README: two instances)
+state-*/
 *.log

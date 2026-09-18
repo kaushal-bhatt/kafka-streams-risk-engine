@@ -223,14 +223,16 @@ That routing layer is the part most tutorials skip, and it is the part that turn
 Streams has state stores" into "Kafka Streams is serving production reads".
 
 **Standby replicas.** With `num.standby.replicas=1`, a second instance keeps a warm copy of
-every store. During a rebalance the active store is unavailable; the API can either wait or
-serve a slightly stale read via `StoreQueryParameters.enableStaleStores()`. The demo exposes
-both behaviours behind a query parameter, so the trade-off is visible rather than asserted.
+every store. As built in stage 6, routing falls back to that copy automatically when the owner
+is unreachable: `StoreQueryParameters.enableStaleStores()`, with the answer marked
+`"stale": true`. That's automatic, not something a caller opts into.
 
-**The failover demo.** Two instances up, kill one, keep polling `/risk/cards/{id}`. Without
-standbys the store rebuilds from the changelog and the endpoint is down for the restore
-duration. With standbys it is available almost immediately. That side-by-side is the most
-convincing thing in the repo, and it is what the README GIF should show.
+**The failover demo, as measured.** Two instances up, kill one, keep polling `/risk/cards/{id}`.
+The original plan assumed standbys would shorten the outage by removing the restore time.
+Measurement showed restoring took milliseconds, and the ~44 s outage was almost all **failure
+detection**: the consumer session timeout, which standbys don't affect. What standbys changed
+was *availability during detection*. Without them: `503` for ~35 s. With them: `200` from the
+standby after 0.4 s, marked stale, then fresh at +43.6 s. See the README.
 
 ---
 
@@ -259,8 +261,11 @@ paragraph. It is the kind of nuance that only comes up once you have had to reas
 - What it actually guarantees: the input offset commit, the state store update, and the write
   to `payments.decisions.v1` commit as one transaction. It does **not** make an external HTTP
   call idempotent.
-- The cost: EOS drops `commit.interval.ms` to 100 ms, so latency is bounded by transaction
-  commit rather than by processing, and throughput falls.
+- The cost, as expected: EOS drops `commit.interval.ms` to 100 ms, so output is readable only
+  after a transaction commits. The cost, as measured at 20 tx/s: none. p95 was 76–81 ms
+  under EOS against 106–108 ms under at-least-once. Under at-least-once, the Kafka Streams
+  producer's default `linger.ms=100` dominates; under EOS, each 100 ms commit flushes the
+  producer. The real EOS cost is throughput at high volume, which hasn't been benchmarked here.
 - `transaction.timeout.ms` must be under the broker's `transaction.max.timeout.ms` or the app
   fails at startup — a good footnote, because it is a real thing that bites people.
 

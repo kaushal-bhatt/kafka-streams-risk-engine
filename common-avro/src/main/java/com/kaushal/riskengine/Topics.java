@@ -30,6 +30,9 @@ public final class Topics {
     public static final String SPEND_STORE = "spend-store";
     public static final String GEO_STORE = "geo-store";
 
+    /** The latest decision per card, materialised from the decision stream for queries. */
+    public static final String LAST_DECISION_STORE = "last-decision-store";
+
     /** Queryable via Interactive Queries from stage 3. */
     public static final String CARD_PROFILE_STORE = "card-profile-store";
     public static final String MERCHANT_STORE = "merchant-store";

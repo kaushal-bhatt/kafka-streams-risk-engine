@@ -49,6 +49,82 @@ The lesson: **default caching trades latency for throughput, and a unit test har
 commits on every record hides that trade completely.** Any Kafka Streams path where table
 freshness matters needs this decided on purpose.
 
+## Stage 6: standby replicas don't speed up failover. They keep reads up during it.
+
+The stage 3 note below originally said standbys would remove "the restore part" of the ~35 s
+outage. Measuring showed that was the wrong mental model. Restoring a few hundred records from
+the changelog took milliseconds. Almost the entire outage was **failure detection**: Kafka
+waiting out the consumer session timeout before it will move a dead member's partitions.
+Standby replicas don't change that at all. With standbys it still took 43.6 s for the
+partition to move.
+
+What standbys change is who can answer *during* that window. The query routing now tries the
+owner and, if it's unreachable, falls back to an instance holding a standby copy, using
+`enableStaleStores()`:
+
+```
+before kill   asked :8097 -> servedBy=localhost:8098 stale=false
++0.4s   200   servedBy=localhost:8097 stale=true  spent=3450
++43.6s  200   servedBy=localhost:8097 stale=false spent=3450
+```
+
+So "standbys give you fast failover" is half true. They give fast failover *of reads*, and no
+restore time on takeover. Processing of the dead instance's partitions still waits for
+detection. To cut that, lower `session.timeout.ms`, and accept that a long GC pause will then
+look like a death.
+
+## Stage 6: exactly-once was not slower
+
+Expected: EOS adds latency, because output is only visible after the transaction commits.
+Measured, 400 transactions at 20/s, two runs each, send until readable by a
+`read_committed` consumer:
+
+| | p50 | p95 | p99 |
+|---|---|---|---|
+| at_least_once | 94 / 69 ms | 108 / 106 ms | 115 / 108 ms |
+| exactly_once_v2 | 71 / 61 ms | 81 / 76 ms | 136 / 79 ms |
+
+The at-least-once p95 sitting at ~106 ms gave it away. Kafka Streams defaults its producer to
+`linger.ms=100`, so at-least-once output waits up to 100 ms to be batched. Under EOS, a commit
+every 100 ms flushes the producer, so output goes out at the commit, often sooner. At this
+load, both modes' latency comes from batching settings, not from the guarantee. The first EOS
+run's p99 of 136 ms didn't reproduce, so it was a tail outlier, not a property. Throughput at
+high volume, where EOS genuinely costs something, wasn't measured, and isn't claimed.
+
+## Stage 6: one more PowerShell 5.1 trap
+
+Posting a schema to the registry's compatibility endpoint failed with
+`Cannot deserialize value of type String from Object value`. `Get-Content -Raw` in Windows
+PowerShell 5.1 returns a string with hidden `PSPath`/`PSDrive` note properties attached, and
+`ConvertTo-Json` serialises the string as an object containing them. Reading the file with
+`[IO.File]::ReadAllText(...)` gives a plain string. That makes four Windows encoding or
+serialisation traps in this project, all silent until something downstream refuses the result.
+
+## Stage 3: failover without standbys takes about 35 seconds
+
+Measured, not guessed. Two instances were running, each owning three partitions. One was
+hard-killed, and the other was asked every 2 s about a card the dead one owned:
+
+```
++0s   503  owner localhost:8097 is unreachable
++35s  200  servedBy=localhost:8098  (same data: spentMinor=3450)
+```
+
+The 35 s is Kafka noticing the member is gone (the consumer session timeout), plus the
+survivor restoring those partitions' stores from their changelog topics. No data was lost,
+and the answer was never wrong, only unavailable. That was the goal of returning `503` +
+`Retry-After` rather than a 404, which would have wrongly said "this card doesn't exist".
+
+This is the baseline for stage 6. With `num.standby.replicas=1`, the survivor already holds a
+warm copy of the other instance's stores, so the restore part disappears. With
+`enableStaleStores()` it can even answer during the rebalance. (The stage 6 measurement above
+showed the restore part was negligible anyway. The 35 s was detection, and the real win was
+answering during it.)
+
+Side note from the same session: the dashboard's card box relied on implicit form submission
+for the Enter key, which the embedded test browser didn't trigger. The fix was an explicit
+`keydown` handler with `preventDefault()`, so a real browser doesn't submit twice.
+
 ## Local state outlived the cluster it belonged to
 
 Symptom: after `docker compose down` and `up`, the engine crash-looped on the very first

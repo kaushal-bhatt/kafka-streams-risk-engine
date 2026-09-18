@@ -7,10 +7,16 @@ hot path.
 Built with Java 21, Spring Boot 3, Kafka Streams, Avro and Schema Registry, with Kafka running
 in KRaft mode.
 
-> **Status: work in progress.** Enrichment and the decision path are built, tested and
-> verified against a live stack. Every transaction gets an APPROVE / REVIEW / DECLINE with
-> human-readable reasons. See the [roadmap](#roadmap) for what is planned. Nothing below claims
-> a feature that isn't in the code.
+> **Status: work in progress.** Enrichment, the decision path, Interactive Queries and production
+> hardening are built, tested and verified against a live two-instance stack:
+>
+> - Every transaction gets an APPROVE / REVIEW / DECLINE with human-readable reasons.
+> - Any card's full risk picture can be queried over HTTP straight from the engine's state.
+> - Processing is exactly-once.
+> - Reads survive an instance being killed.
+>
+> See the [roadmap](#roadmap) for what is planned. Nothing below claims a feature that isn't in
+> the code, and every number below was measured.
 
 ---
 
@@ -53,8 +59,12 @@ RiskEvaluator                         Processor API, owns three state stores
    ├─ geo-store                       last location, per card
    └─ punctuator                      evicts stale state hourly (wall-clock)
         │
+        ├──────────────► last-decision-store   KTable, latest decision per card
         ▼
 payments.decisions.v1                 APPROVE / REVIEW / DECLINE + score + reasons
+
+GET /risk/cards/{id}  ◄── Interactive Queries over all five stores, routed to the owning instance
+GET /                 ◄── live dashboard, fed by server-sent events from payments.decisions.v1
 ```
 
 ### Enrichment: three joins, three reasons
@@ -98,6 +108,181 @@ for exactly that.
 grow by one entry per card forever, so a wall-clock punctuator evicts stale entries every hour.
 It runs on the wall clock, not stream time, because stream time only advances when records
 arrive. An idle partition would never clean up.
+
+### Queries: the state stores are the database
+
+A message queue can't tell you anything about a card. This engine can, because its state
+stores already hold everything it knows:
+
+```bash
+curl http://localhost:8088/risk/cards/CARD-0003
+```
+
+```json
+{
+  "cardId": "CARD-0003",
+  "servedBy": "localhost:8097",
+  "routedVia": "localhost:8098",
+  "partition": 1,
+  "profile": { "status": "ACTIVE", "riskTier": "HIGH", "dailyLimitMinor": 50000, "homeCountry": "DE", "...": "..." },
+  "spendToday": { "spentMinor": 3450, "remainingMinor": 46550 },
+  "lastSeen": { "place": "DE", "seenAt": "2026-09-18T10:37:42.613Z", "...": "..." },
+  "recentActivity": { "attemptsLast60s": 1, "attemptsLast10m": 2 },
+  "lastDecision": {
+    "decision": "DECLINE", "score": 90, "amountMinor": 8900,
+    "reasons": [ { "rule": "GEO_VELOCITY", "detail": "10252 km from DE to BR in 4m 0s implies 153782 km/h" } ]
+  }
+}
+```
+
+That answer is assembled from five local stores, with no database anywhere. Notice what it
+says: €34.50 spent, not €123.50, and last seen in DE, not BR. The €89 São Paulo charge was
+declined, so the engine never recorded it as spend or as a location.
+
+**Each card's state lives on exactly one instance.** That's the one Kafka assigned the card's
+partition to. With two instances, the naive approach answers half the cards and returns 404
+for the rest. This one routes instead. It hashes the card id exactly as the producer did
+(`queryMetadataForKey`), and if another instance owns that partition it forwards the request
+there. The response says so: `servedBy` is the owner, and `routedVia` is the instance you
+actually asked. One lookup routes all five stores, because they're all keyed by card id in the
+same sub-topology.
+
+If the owner is unreachable, the query falls back to a **standby replica**: a warm copy of
+the partition that another instance keeps for exactly this situation. The answer comes back
+immediately, marked `"stale": true`. If no copy can answer at all, the response is `503` with
+`Retry-After`, never a false 404. See [Failover](#failover-reads-survive-a-dead-instance) for
+the measured difference.
+
+### The dashboard
+
+Open <http://localhost:8088> for live decisions as they happen, colour-coded, with counters,
+the rules firing most often, which instance owns which partitions, and a box to query any
+card. Clicking a card in the feed shows the Interactive Queries answer, including whether it
+was routed to another instance.
+
+The feed uses a plain Kafka consumer assigned every partition of the decisions topic, not a
+`peek()` inside the topology. A `peek()` would only see the partitions its own instance owns,
+so with two instances each dashboard would show half the traffic. It reads with
+`isolation.level=read_committed`, so it never shows a decision from an aborted transaction.
+
+---
+
+## Production hardening
+
+Every number in this section was measured on the live Docker stack, with the tools in this repo.
+
+### Failover: reads survive a dead instance
+
+Two instances were running, each active for three partitions and holding a warm **standby**
+copy of the other three (`num.standby.replicas=1`). The instance owning `CARD-0003` was
+**hard-killed**, with no graceful shutdown, and the survivor was queried every second:
+
+| | Without standbys | **With standbys** |
+|---|---|---|
+| First query after the kill | `503`, repeated for ~35 s | **`200` after 0.4 s**, from the standby copy, `"stale": true` |
+| Data | identical, once available | **identical** (same spend, same last decision) |
+| Back to `"stale": false` | — | +43.6 s |
+
+What standbys do **not** do is make Kafka notice the failure faster. Detection is the consumer
+session timeout: about 45 seconds by default, and it cost about 44 seconds either way. What
+changes is what happens during that window. Without a standby, nothing on the survivor can
+answer for the dead instance's cards. With one, the survivor already holds their state and
+answers straight away. It labels the answer `stale` rather than passing it off as fresh,
+because a standby can trail the owner's last writes. Once Kafka moves the partition, the
+standby becomes the active copy with nothing to restore, and the flag clears by itself.
+
+The detection window itself can be cut by lowering `session.timeout.ms`. The trade-off is that
+a long GC pause then looks like a dead instance, and triggers a needless rebalance.
+
+### Exactly-once, and what it actually costs
+
+`processing.guarantee=exactly_once_v2`. For each input transaction, the input offset, every
+state-store change (velocity, spend, location) and the output decision commit as **one** Kafka
+transaction. A crash mid-way can't produce a decision twice, or count one authorisation twice
+toward velocity.
+
+The expected cost is latency, since output only becomes readable when the transaction
+commits. So it was measured instead of assumed. The `latency` scenario sends 400 transactions
+at 20 per second, and times each one from send to its decision being readable by a
+`read_committed` consumer. Two runs per mode:
+
+| | p50 | p95 | p99 |
+|---|---|---|---|
+| `at_least_once` | 94 / 69 ms | 108 / 106 ms | 115 / 108 ms |
+| `exactly_once_v2` | 71 / 61 ms | **81 / 76 ms** | 136 / 79 ms |
+
+**At this load, exactly-once costs nothing measurable, and its p95 is lower.** The reason:
+Kafka Streams defaults its producer to `linger.ms=100`, so under at-least-once, output waits up
+to 100 ms to be batched, which is exactly where that p95 sits. Under exactly-once, the engine
+commits every 100 ms, and each commit flushes the producer. Either way the latency comes from a
+batching setting, not from the guarantee.
+
+What this doesn't measure is **throughput at high volume**. That's where exactly-once really
+costs something: transaction markers and per-commit overhead. It's a separate benchmark, not
+claimed here.
+
+```bash
+./gradlew :traffic-generator:run --args="latency --limit=400"
+```
+
+Run it once with the engine started normally and once with
+`--risk.processing-guarantee=at_least_once` to reproduce the comparison.
+
+### Dead-letter queue
+
+A record that isn't valid Avro doesn't stall its partition, and isn't silently skipped either.
+It's written to `payments.transactions.dlq.v1` **byte for byte**, with headers recording where
+it came from and why it failed. This is from a live test that put raw JSON on the transactions
+topic:
+
+```
+dlq.original.topic:payments.transactions.v1, dlq.original.partition:0, dlq.original.offset:305,
+dlq.exception.class:org.apache.kafka.common.errors.SerializationException,
+dlq.exception.message:Unknown magic byte!, dlq.task.id:0_0      CARD-0042      {"definitely": "not avro"}
+```
+
+The engine stayed `RUNNING`, and the next transaction on the same partition was processed
+normally.
+
+Two deliberate choices:
+
+- **The DLQ write is synchronous.** If the dead-letter topic itself is down, the engine stops
+  rather than skip the record. Dropping a transaction without a trace is the one outcome this
+  exists to prevent.
+- **The DLQ producer is outside the Streams transaction.** A reprocessed task can therefore
+  dead-letter the same record twice. For a DLQ that's the right trade: a duplicate costs
+  nothing, and a missing record hides a problem.
+
+### Schema evolution on a live topic
+
+Stage 6 added an optional `deviceFingerprint` field to `Transaction` while the topic was in
+use. Schema Registry confirmed compatibility before anything was deployed:
+
+```bash
+curl -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  --data "{\"schema\": $(jq -Rs . < common-avro/build/generated/avro/schema/Transaction.avsc)}" \
+  http://localhost:8081/compatibility/subjects/payments.transactions.v1-value/versions/latest
+# {"is_compatible":true}
+```
+
+Then came the real test. An engine still running the **old** code, compiled before the field
+existed, was sent transactions in the **new** format. It consumed both, produced both
+decisions, and dropped nothing. Because the new field is optional with a null default, the
+change works in both directions, so producers and consumers can be upgraded in any order.
+`SchemaEvolutionTest` proves both directions against the real v1 schema, kept in test
+resources.
+
+### Metrics
+
+`/actuator/prometheus` exposes the engine's own counters alongside every Kafka Streams metric:
+
+```
+risk_decisions_total{decision="APPROVE"} 4.0
+risk_decisions_total{decision="DECLINE"} 1.0
+risk_rule_hits_total{rule="DAILY_LIMIT"} 1.0
+risk_dlq_records_total{source="payments.transactions.v1"} 1.0
+kafka_stream_task_dropped_records_total{task_id="0_0",...} 1.0     <- Kafka's own count agrees with the DLQ
+```
 
 Also in place:
 
@@ -171,7 +356,9 @@ expect:   first APPROVE, second DECLINE (GEO_VELOCITY)
 
 ### 4. Look at the result
 
-The engine logs every REVIEW and DECLINE with its reasons:
+Open the dashboard at **<http://localhost:8088>** and click `CARD-0003` in the feed.
+
+The engine also logs every REVIEW and DECLINE with its reasons:
 
 ```
 DECLINE CARD-0003 EUR 89.00 score=90 - GEO_VELOCITY (10253 km from DE to BR in 4m 0s implies 153793 km/h); CUSTOMER_RISK_TIER (customer is HIGH risk tier)
@@ -191,7 +378,7 @@ to see every decision, and **payments.enriched.v1** to see the joined data that 
 | Kafka | `localhost:9092` | Single broker in KRaft mode (no ZooKeeper) |
 | Schema Registry | <http://localhost:8081> | Avro schemas, `BACKWARD` compatibility |
 | kafka-ui | <http://localhost:8089> | Browse topics, messages, schemas and consumer groups |
-| Risk engine | <http://localhost:8088> | Spring Boot + Kafka Streams. `/actuator/health` |
+| Risk engine | <http://localhost:8088> | Spring Boot + Kafka Streams. Dashboard at `/`, API under `/risk`, health at `/actuator/health` |
 | Postgres | `localhost:5432` | Only used from the CDC stage onwards. Start it with `docker compose --profile cdc up -d` |
 
 ```bash
@@ -215,6 +402,7 @@ docker compose logs -f kafka
 | `card-testing` | 20 authorisations under €2 on one card, across 8 merchants | 3 APPROVE, then REVIEW (`CARD_TESTING`), then DECLINE once `VELOCITY` joins in |
 | `impossible-travel` | Home, then São Paulo four minutes later in event time | APPROVE, then DECLINE (`GEO_VELOCITY`) |
 | `limit-breach` | Walks a card up to its daily limit, then one transaction past it | 4 APPROVE, then DECLINE (`DAILY_LIMIT`) |
+| `latency` | 20 transactions per second (`--limit=N`, default 200), each timed until its decision is readable | prints p50 / p95 / p99 latency |
 | `replay` | Replays the labelled Sparkov dataset (see [below](#replaying-real-labelled-data)) | measured in stage 7 |
 
 The engine remembers. If you run `limit-breach` twice on the same day, the card declines sooner
@@ -228,6 +416,47 @@ working as intended. Reset (see below) to replay a scenario from a clean slate.
 | `--limit` | `0` | Stop after N records (`0` = no limit) |
 | `--bootstrap-servers` | `localhost:9092` | |
 | `--schema-registry` | `http://localhost:8081` | |
+
+### The query API
+
+| Endpoint | Returns |
+|---|---|
+| `GET /risk/cards/{cardId}` | The card's profile, spend today and remaining limit, last location, recent attempts, and last decision with reasons. `"stale": true` if the owner was unreachable and a standby copy answered. `404` if the engine has never seen the card; `503` + `Retry-After` if no copy can answer. |
+| `GET /actuator/prometheus` | Decision, rule-hit and DLQ counters, plus every Kafka Streams metric. |
+| `GET /risk/instances` | Every instance in the group, and which partitions each one owns (active and standby). |
+| `GET /risk/decisions/stream` | Server-sent events: a `snapshot` on connect, then one `decision` per decision. This is what the dashboard uses. |
+
+### Running two instances
+
+This is where Interactive Queries become visible. With the first engine running on 8088,
+start a second one in another terminal. It needs its own port, advertised address and state
+directory:
+
+```bash
+./gradlew :risk-engine:bootRun --args="--server.port=8087 --risk.application-server=localhost:8087 --risk.state-dir=./state-2"
+```
+
+Kafka rebalances. Each instance ends up active for three of the six partitions, and holds a
+standby copy of the other three:
+
+```bash
+curl http://localhost:8088/risk/instances
+```
+
+Now ask **both** instances about the same card. Each gives the same answer. One serves it
+from its own state, and the other routes to it (`routedVia` is set):
+
+```bash
+curl http://localhost:8088/risk/cards/CARD-0003
+```
+
+```bash
+curl http://localhost:8087/risk/cards/CARD-0003
+```
+
+Then kill the instance that owns `CARD-0003` and keep querying the other one. It answers
+immediately from its standby copy with `"stale": true`, and after about 45 seconds, once Kafka
+has moved the partition, with `"stale": false`. The dashboard marks stale answers in amber.
 
 ### Reading topics from the command line
 
@@ -244,9 +473,22 @@ docker exec -it risk-schema-registry kafka-avro-console-consumer --bootstrap-ser
 ./gradlew test
 ```
 
-18 tests, driven through `TopologyTestDriver` with an in-memory mock Schema Registry, so they
-need no running infrastructure. Each rule has its own test, including the edge cases that
-matter:
+38 tests, none of which need running infrastructure. The topology tests drive
+`TopologyTestDriver` with an in-memory mock Schema Registry. The query tests read the same
+stores back out, and check the routing logic against a mocked second instance:
+
+- a card owned locally is answered with no HTTP call
+- a card owned elsewhere is forwarded
+- a forwarded request is never forwarded twice
+- an unreachable owner falls back to a standby copy, marked stale
+- with no copy anywhere, the answer is 503, not 404
+
+The dead-letter test puts real garbage bytes on the transactions topic. It checks that they
+land in the DLQ with their provenance, that the next record still gets a decision, and that
+the engine stops rather than drop a record when the DLQ itself fails. The schema-evolution
+test proves compatibility in both directions against the real v1 schema.
+
+Each rule has its own test, including the edge cases that matter:
 
 - the declined amount doesn't count toward the daily limit
 - a real 14-hour flight isn't impossible travel
@@ -305,6 +547,9 @@ crash-loops with `Schema N not found; error code: 40403` the first time it reads
 
 | Symptom | Cause |
 |---|---|
+| `/risk/cards/...` returns 503 | Partitions are moving between instances: at startup, or after an instance joined or left. Retry after a second, as the `Retry-After` header says. It clears once the group settles. |
+| The second instance fails to start with a state-directory lock error | Both instances are using the same `state` folder. Give the second one its own with `--risk.state-dir=./state-2`. |
+| `/risk/cards/...` answers with `"stale": true` | The card's owner is unreachable, so a standby copy answered. This clears by itself once Kafka moves the partition, after about 45 s. |
 | Engine crash-loops with `Schema N not found; error code: 40403` | Local state from before a `docker compose down` survived. Stop the engine, delete `state/` at the repo root, and start it again. |
 | Engine logs `MissingSourceTopicException` | It started before `init-topics` finished. Wait for `topics ready` and restart it. |
 | A known card gets `UNKNOWN_CARD` | Its transaction overtook its card profile, which is built by a foreign-key join through internal topics. This happens mainly when the engine starts with a backlog. The transaction is reviewed, not lost. The scenarios pause briefly after seeding to avoid it. |
@@ -322,13 +567,14 @@ crash-loops with `Schema N not found; error code: 40403` the first time it reads
 - [x] **Stage 1: Enrichment.** Three join types, tests, traffic generator, dataset replay
 - [x] **Stage 2: Decision path.** A custom Processor API node with three state stores, eight
       rules, verdict-dependent state updates and a punctuator that keeps state bounded
-- [ ] **Stage 3: Interactive Queries.** Serve risk profiles over HTTP straight from the state
-      stores, route queries between instances, and add a live dashboard
+- [x] **Stage 3: Interactive Queries.** Risk profiles served over HTTP straight from five state
+      stores, routed to the owning instance, and a live dashboard
 - [ ] **Stage 4: Analytics path.** Windowed merchant decline rates with a grace period and
       `suppress(untilWindowCloses)`
 - [ ] **Stage 5: CDC.** Reference data flows from Postgres through Debezium into Kafka
-- [ ] **Stage 6: Hardening.** Exactly-once processing, a dead-letter queue, standby replicas
-      with a failover demo, schema evolution, metrics
+- [x] **Stage 6: Hardening.** Exactly-once processing (latency measured), a dead-letter queue,
+      standby replicas with measured failover, a live schema evolution, Prometheus metrics.
+      A Grafana dashboard is not built yet.
 - [ ] **Stage 7: Evaluation.** Precision and recall of the rules measured against 1.85M
       labelled transactions
 
@@ -358,6 +604,9 @@ kafka-streams-risk-engine/
 │       ├── config/       Streams configuration, Avro serdes, properties
 │       ├── topology/     Enrichment and decision topologies, event-time extractor
 │       ├── decision/     RiskEvaluator processor, its stores, the rules and thresholds
+│       ├── query/        Interactive Queries: store access, cross-instance routing, the API
+│       ├── dashboard/    Live decision feed (server-sent events); the page is in resources/static
+│       ├── errors/       Dead-letter queue: the deserialization handler and its publisher
 │       └── health/       Health check that reports the Kafka Streams state
 ├── traffic-generator/    Seeded fraud scenarios and the dataset replay
 ├── docker/               Topic creation script

@@ -7,6 +7,7 @@ import com.kaushal.riskengine.avro.EnrichedTransaction;
 import com.kaushal.riskengine.avro.LastSeen;
 import com.kaushal.riskengine.avro.VelocityEntry;
 import com.kaushal.riskengine.config.AvroSerdes;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.processor.api.Processor;
 import org.apache.kafka.streams.processor.api.ProcessorSupplier;
@@ -31,14 +32,16 @@ import java.util.Set;
 public class RiskEvaluatorSupplier implements ProcessorSupplier<String, EnrichedTransaction, String, Decision> {
 
     private final AvroSerdes avroSerdes;
+    private final MeterRegistry meterRegistry;
 
-    public RiskEvaluatorSupplier(AvroSerdes avroSerdes) {
+    public RiskEvaluatorSupplier(AvroSerdes avroSerdes, MeterRegistry meterRegistry) {
         this.avroSerdes = avroSerdes;
+        this.meterRegistry = meterRegistry;
     }
 
     @Override
     public Processor<String, EnrichedTransaction, String, Decision> get() {
-        return new RiskEvaluator();
+        return new RiskEvaluator(meterRegistry);
     }
 
     @Override

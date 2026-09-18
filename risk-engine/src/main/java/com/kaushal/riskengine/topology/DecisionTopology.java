@@ -6,10 +6,14 @@ import com.kaushal.riskengine.avro.EnrichedTransaction;
 import com.kaushal.riskengine.config.AvroSerdes;
 import com.kaushal.riskengine.decision.RiskEvaluatorSupplier;
 import io.confluent.kafka.streams.serdes.avro.SpecificAvroSerde;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.common.serialization.Serdes;
+import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.streams.kstream.KStream;
+import org.apache.kafka.streams.kstream.Materialized;
 import org.apache.kafka.streams.kstream.Named;
 import org.apache.kafka.streams.kstream.Produced;
+import org.apache.kafka.streams.state.KeyValueStore;
 import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Component;
 
@@ -28,9 +32,11 @@ import org.springframework.stereotype.Component;
 public class DecisionTopology {
 
     private final AvroSerdes avroSerdes;
+    private final MeterRegistry meterRegistry;
 
-    public DecisionTopology(AvroSerdes avroSerdes) {
+    public DecisionTopology(AvroSerdes avroSerdes, MeterRegistry meterRegistry) {
         this.avroSerdes = avroSerdes;
+        this.meterRegistry = meterRegistry;
     }
 
     @Bean
@@ -38,10 +44,19 @@ public class DecisionTopology {
         SpecificAvroSerde<Decision> decisionSerde = avroSerdes.value();
 
         KStream<String, Decision> decisions = enrichmentStream.process(
-                new RiskEvaluatorSupplier(avroSerdes),
+                new RiskEvaluatorSupplier(avroSerdes, meterRegistry),
                 Named.as("risk-evaluator"));
 
         decisions.to(Topics.DECISIONS, Produced.with(Serdes.String(), decisionSerde).withName("decisions-sink"));
+
+        // The latest decision per card, as a table, so Interactive Queries can answer "what
+        // happened last on this card?" from local state. Same key, same partitioning, so no
+        // repartition - it lives in the same task as the card's other stores.
+        decisions.toTable(
+                Named.as("last-decision"),
+                Materialized.<String, Decision, KeyValueStore<Bytes, byte[]>>as(Topics.LAST_DECISION_STORE)
+                        .withKeySerde(Serdes.String())
+                        .withValueSerde(decisionSerde));
 
         return decisions;
     }

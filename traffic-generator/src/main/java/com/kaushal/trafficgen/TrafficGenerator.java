@@ -55,6 +55,10 @@ public final class TrafficGenerator {
                     scenarios.seed();
                     scenarios.limitBreach();
                 }
+                case "latency" -> {
+                    scenarios.seed();
+                    scenarios.latency(config.limit() > 0 ? config.limit() : 200);
+                }
                 // The replay brings its own cards and merchants, so it does not seed the
                 // synthetic reference data. Stage 5 loads Sparkov's customer and merchant
                 // files into Postgres and lets Debezium carry them in.
@@ -78,6 +82,7 @@ public final class TrafficGenerator {
                   card-testing       20 sub-EUR-2 authorisations across 8 merchants
                   impossible-travel  Berlin, then Sao Paulo four minutes later
                   limit-breach       walk a card up to and past its daily limit
+                  latency            time send -> decision readable, 20/s (--limit=N, default 200)
                   replay             replay the labelled Sparkov dataset (see docs/DATA.md)
 
                 Flags

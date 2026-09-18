@@ -38,6 +38,12 @@ protocol RiskModel {
     /** Ground-truth label, present only when replaying a labelled dataset.
         Carried through to Decision so precision/recall can be computed downstream. */
     union { null, boolean } labelledFraud = null;
+    /** Added in stage 6, as a deliberate schema evolution on a live topic. Optional with a
+        null default, which makes the change FULL-compatible: a new consumer reads old
+        records (the field is null), and an already-running consumer compiled against the
+        old schema reads new records (it skips the field). Neither side has to be deployed
+        first. See SchemaEvolutionTest. */
+    union { null, string } deviceFingerprint = null;
   }
 
   /** Reference data, compacted topic, sourced from Postgres via CDC. */

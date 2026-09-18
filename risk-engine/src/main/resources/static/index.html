@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Risk Engine · Live Decisions</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #14171c; --muted: #5d6673; --faint: #8a93a0;
+    --line: #e3e6eb; --accent: #3a5bd9; --accent-soft: #eaeefc;
+    --ok: #1a7f4b; --ok-soft: #e3f4ea; --warn: #9a6200; --warn-soft: #fbf0d9;
+    --bad: #b42318; --bad-soft: #fbe4e1; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --ink: #e8ebef; --muted: #a0a8b4; --faint: #737c88;
+      --line: #262c35; --accent: #8aa2ff; --accent-soft: #1c2440;
+      --ok: #5bd394; --ok-soft: #15291f; --warn: #f0b85a; --warn-soft: #2d2413;
+      --bad: #ff8a7a; --bad-soft: #321a18;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 24px 20px 48px; }
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin-top: 2px; }
+  .badges { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .badge { font: 12px var(--mono); padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); margin-right: 6px; vertical-align: 1px; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+  .dot.retry { background: var(--warn); }
+
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .kpi .value { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .kpi .note { color: var(--faint); font-size: 12px; }
+  .kpi.ok .value { color: var(--ok); } .kpi.warn .value { color: var(--warn); } .kpi.bad .value { color: var(--bad); }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .panel h2 { font-size: 13px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line);
+              text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600;
+              display: flex; justify-content: space-between; align-items: center; }
+  .panel .body { padding: 14px 16px; }
+  .side { display: grid; gap: 16px; }
+
+  .feed-wrap { max-height: 640px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--panel); font-size: 12px; color: var(--faint); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); white-space: nowrap; }
+  td.time { color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+  tr.fresh { animation: flash 1.6s ease-out; }
+  @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
+  .card-link { font-family: var(--mono); color: var(--accent); cursor: pointer; background: none; border: 0; padding: 0; font-size: 13px; }
+  .card-link:hover { text-decoration: underline; }
+
+  .pill { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; }
+  .pill.APPROVE { color: var(--ok); background: var(--ok-soft); }
+  .pill.REVIEW { color: var(--warn); background: var(--warn-soft); }
+  .pill.DECLINE { color: var(--bad); background: var(--bad-soft); }
+  .chip { display: inline-block; font: 11px var(--mono); padding: 1px 6px; margin: 1px 4px 1px 0; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }
+  .empty { color: var(--muted); padding: 28px 16px; text-align: center; }
+  .empty code { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 2px 6px; border-radius: 4px; }
+
+  form.lookup { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; min-width: 0; font: 13px var(--mono); padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+  button.go { font: inherit; font-weight: 600; padding: 8px 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; }
+  .route { margin: 12px 0 4px; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 13px; }
+  .route b { font-family: var(--mono); font-weight: 600; }
+  .route.stale { background: var(--warn-soft); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 12px 0 0; }
+  dt { color: var(--muted); } dd { margin: 0; }
+  .bar { height: 6px; background: var(--line); border-radius: 3px; margin-top: 4px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--accent); }
+  .reasons { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+  .msg { color: var(--muted); margin-top: 12px; }
+  .msg.err { color: var(--bad); }
+
+  .rule-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 4px 0; }
+  .rule-row .name { font: 12px var(--mono); }
+  .rule-row .count { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .rule-row .bar { grid-column: 1 / -1; margin-top: 0; }
+
+  .inst { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .inst:last-child { border-bottom: 0; }
+  .inst .host { font-family: var(--mono); font-weight: 600; }
+  .inst .you { font-size: 11px; color: var(--accent); margin-left: 6px; }
+  .parts { margin-top: 4px; }
+  .part { display: inline-block; font: 11px var(--mono); min-width: 22px; text-align: center; padding: 2px 4px; margin: 2px 4px 0 0; border-radius: 4px; background: var(--accent-soft); color: var(--accent); }
+  .part.standby { background: transparent; border: 1px dashed var(--line); color: var(--faint); }
+
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Risk Engine</h1>
+      <div class="sub">Every card authorisation, scored by Kafka Streams against local state stores. No database on the path.</div>
+    </div>
+    <div class="badges">
+      <span class="badge"><span class="dot" id="conn"></span><span id="conn-text">connecting…</span></span>
+      <span class="badge" id="self">instance: …</span>
+    </div>
+  </header>
+
+  <section class="kpis">
+    <div class="kpi"><div class="label">Decisions</div><div class="value" id="k-total">0</div><div class="note">seen by this dashboard</div></div>
+    <div class="kpi ok"><div class="label">Approved</div><div class="value" id="k-approve">0</div><div class="note" id="k-approve-pct">–</div></div>
+    <div class="kpi warn"><div class="label">Review</div><div class="value" id="k-review">0</div><div class="note" id="k-review-pct">–</div></div>
+    <div class="kpi bad"><div class="label">Declined</div><div class="value" id="k-decline">0</div><div class="note" id="k-decline-pct">–</div></div>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>Live decisions <span id="feed-count" class="badge">0 shown</span></h2>
+      <div class="feed-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Card</th><th style="text-align:right">Amount</th><th>Decision</th><th style="text-align:right">Score</th><th>Why</th></tr></thead>
+          <tbody id="feed"></tbody>
+        </table>
+        <div class="empty" id="feed-empty">
+          Waiting for decisions. Send some traffic:<br><br>
+          <code>./gradlew :traffic-generator:run --args="impossible-travel --speed=20"</code>
+        </div>
+      </div>
+    </section>
+
+    <div class="side">
+      <section class="panel">
+        <h2>Ask the engine about a card</h2>
+        <div class="body">
+          <form class="lookup" id="lookup">
+            <input type="text" id="card" placeholder="CARD-0003" autocomplete="off" spellcheck="false">
+            <button class="go" type="submit">Query</button>
+          </form>
+          <div id="card-result"><div class="msg">Answered by Interactive Queries straight from the engine's state stores. Click any card in the feed.</div></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Rules fired</h2>
+        <div class="body" id="rules"><div class="msg">None yet.</div></div>
+      </section>
+
+      <section class="panel">
+        <h2>Instances &amp; partitions</h2>
+        <div class="body" id="instances"><div class="msg">Loading…</div></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const MAX_ROWS = 80;
+  const counts = { APPROVE: 0, REVIEW: 0, DECLINE: 0 };
+  const rules = {};
+  const $ = (id) => document.getElementById(id);
+
+  // Everything from Kafka goes in as text, never as HTML.
+  function el(tag, props = {}, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'class') n.className = v;
+      else if (k === 'text') n.textContent = v;
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+      else n.setAttribute(k, v);
+    }
+    for (const kid of kids) if (kid != null) n.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+    return n;
+  }
+  const money = (minor) => (minor / 100).toLocaleString('en-GB', { style: 'currency', currency: 'EUR' });
+  const clock = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour12: false });
+  const ago = (iso) => {
+    const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.round(s / 60) + ' min ago';
+    return Math.round(s / 3600) + ' h ago';
+  };
+  const pct = (n, total) => total ? (100 * n / total).toFixed(1) + '%' : '–';
+
+  function renderKpis() {
+    const total = counts.APPROVE + counts.REVIEW + counts.DECLINE;
+    $('k-total').textContent = total.toLocaleString();
+    $('k-approve').textContent = counts.APPROVE.toLocaleString();
+    $('k-review').textContent = counts.REVIEW.toLocaleString();
+    $('k-decline').textContent = counts.DECLINE.toLocaleString();
+    $('k-approve-pct').textContent = pct(counts.APPROVE, total);
+    $('k-review-pct').textContent = pct(counts.REVIEW, total);
+    $('k-decline-pct').textContent = pct(counts.DECLINE, total);
+  }
+
+  function renderRules() {
+    const entries = Object.entries(rules).sort((a, b) => b[1] - a[1]);
+    const box = $('rules');
+    box.replaceChildren();
+    if (!entries.length) { box.append(el('div', { class: 'msg', text: 'None yet.' })); return; }
+    const max = entries[0][1];
+    for (const [name, n] of entries) {
+      const bar = el('div', { class: 'bar' }, el('span', { style: `width:${(100 * n / max).toFixed(1)}%` }));
+      box.append(el('div', { class: 'rule-row' }, el('span', { class: 'name', text: name }),
+        el('span', { class: 'count', text: n.toLocaleString() }), bar));
+    }
+  }
+
+  function row(d, fresh) {
+    const why = el('td');
+    if (!d.reasons.length) why.append(el('span', { class: 'chip', text: '—' }));
+    for (const r of d.reasons) why.append(el('span', { class: 'chip', title: r.detail, text: r.rule }));
+    return el('tr', { class: fresh ? 'fresh' : '' },
+      el('td', { class: 'time', text: clock(d.evaluatedAt) }),
+      el('td', {}, el('button', { class: 'card-link', type: 'button', text: d.cardId, onclick: () => lookup(d.cardId) })),
+      el('td', { class: 'num', text: money(d.amountMinor) }),
+      el('td', {}, el('span', { class: 'pill ' + d.decision, text: d.decision })),
+      el('td', { class: 'num', text: d.score }),
+      why);
+  }
+
+  function trimFeed() {
+    const feed = $('feed');
+    while (feed.children.length > MAX_ROWS) feed.lastChild.remove();
+    $('feed-count').textContent = feed.children.length + ' shown';
+    $('feed-empty').hidden = feed.children.length > 0;
+  }
+
+  function onSnapshot(s) {
+    Object.assign(counts, { APPROVE: 0, REVIEW: 0, DECLINE: 0 }, s.decisions);
+    for (const k of Object.keys(rules)) delete rules[k];
+    Object.assign(rules, s.rules);
+    $('feed').replaceChildren(...s.recent.slice(0, MAX_ROWS).map(d => row(d, false)));
+    trimFeed(); renderKpis(); renderRules();
+  }
+
+  function onDecision(d) {
+    counts[d.decision] = (counts[d.decision] || 0) + 1;
+    for (const r of d.reasons) rules[r.rule] = (rules[r.rule] || 0) + 1;
+    $('feed').prepend(row(d, true));
+    trimFeed(); renderKpis(); renderRules();
+  }
+
+  function connect() {
+    const es = new EventSource('/risk/decisions/stream');
+    es.addEventListener('open', () => { $('conn').className = 'dot live'; $('conn-text').textContent = 'live'; });
+    es.addEventListener('snapshot', e => onSnapshot(JSON.parse(e.data)));
+    es.addEventListener('decision', e => onDecision(JSON.parse(e.data)));
+    es.addEventListener('error', () => { $('conn').className = 'dot retry'; $('conn-text').textContent = 'reconnecting…'; });
+  }
+
+  async function lookup(cardId) {
+    cardId = (cardId || '').trim();
+    if (!cardId) return;
+    $('card').value = cardId;
+    const out = $('card-result');
+    out.replaceChildren(el('div', { class: 'msg', text: 'Asking the engine…' }));
+    let res;
+    try { res = await fetch('/risk/cards/' + encodeURIComponent(cardId)); }
+    catch { out.replaceChildren(el('div', { class: 'msg err', text: 'The engine did not answer.' })); return; }
+    if (res.status === 404) { out.replaceChildren(el('div', { class: 'msg', text: 'The engine has never seen ' + cardId + '.' })); return; }
+    if (res.status === 503) {
+      const body = await res.json().catch(() => ({}));
+      out.replaceChildren(el('div', { class: 'msg err', text: 'Not ready: ' + (body.message || 'rebalancing') + '. Retry in a moment.' }));
+      return;
+    }
+    if (!res.ok) { out.replaceChildren(el('div', { class: 'msg err', text: 'Error ' + res.status })); return; }
+    renderCard(await res.json());
+  }
+
+  function renderCard(v) {
+    const out = $('card-result');
+    const route = el('div', { class: 'route' + (v.stale ? ' stale' : '') });
+    if (v.stale) {
+      route.append('Served from a ', el('b', { text: 'standby replica' }), ' on ', el('b', { text: v.servedBy }),
+        ': the owner of partition ', el('b', { text: v.partition }),
+        ' is unreachable. This copy may trail the owner\'s last writes until Kafka moves the partition here.');
+    } else if (v.routedVia) {
+      route.append('You asked ', el('b', { text: v.routedVia }), '. That instance doesn\'t hold this card, so it routed the query to ',
+        el('b', { text: v.servedBy }), ', which owns partition ', el('b', { text: v.partition }), '.');
+    } else {
+      route.append('Answered by ', el('b', { text: v.servedBy }), ' from its own state for partition ', el('b', { text: v.partition }), '.');
+    }
+
+    const dl = el('dl');
+    const add = (k, ...val) => dl.append(el('dt', { text: k }), el('dd', {}, ...val));
+    if (v.profile) {
+      add('Card', `${v.profile.status} · ${v.profile.riskTier} risk · home ${v.profile.homeCountry}`);
+      const spent = v.spendToday.spentMinor, limit = v.profile.dailyLimitMinor;
+      const pctUsed = limit ? Math.min(100, 100 * spent / limit) : 0;
+      add('Spend today', `${money(spent)} of ${money(limit)}`,
+        el('div', { class: 'bar' }, el('span', { style: `width:${pctUsed.toFixed(1)}%` })));
+    } else {
+      add('Card', 'not in the reference data');
+    }
+    if (v.lastSeen) add('Last seen', `${v.lastSeen.place || 'unknown place'}, ${ago(v.lastSeen.seenAt)}`);
+    if (v.recentActivity) add('Attempts', `${v.recentActivity.attemptsLast60s} in the last 60s · ${v.recentActivity.attemptsLast10m} in 10 min`);
+    if (v.lastDecision) {
+      const d = v.lastDecision;
+      const reasons = el('ul', { class: 'reasons' });
+      for (const r of d.reasons) reasons.append(el('li', {}, el('b', { text: r.rule }), ' — ' + r.detail));
+      add('Last decision', el('span', { class: 'pill ' + d.decision, text: d.decision }),
+        ` score ${d.score} · ${money(d.amountMinor)}`, d.reasons.length ? reasons : null);
+    }
+    out.replaceChildren(route, dl);
+  }
+
+  async function refreshInstances() {
+    const box = $('instances');
+    try {
+      const res = await fetch('/risk/instances');
+      if (!res.ok) throw new Error(res.status);
+      const list = await res.json();
+      box.replaceChildren();
+      for (const i of list) {
+        if (i.self) $('self').textContent = 'instance: ' + i.host;
+        const parts = el('div', { class: 'parts' });
+        for (const p of i.activePartitions) parts.append(el('span', { class: 'part', title: 'active', text: p }));
+        for (const p of i.standbyPartitions) parts.append(el('span', { class: 'part standby', title: 'standby', text: p }));
+        if (!i.activePartitions.length && !i.standbyPartitions.length) parts.append(el('span', { class: 'chip', text: 'no partitions' }));
+        box.append(el('div', { class: 'inst' },
+          el('span', { class: 'host', text: i.host }), i.self ? el('span', { class: 'you', text: '← this dashboard' }) : null, parts));
+      }
+      if (!list.length) box.append(el('div', { class: 'msg', text: 'No instances yet (starting up).' }));
+    } catch {
+      box.replaceChildren(el('div', { class: 'msg err', text: 'Could not load instance metadata.' }));
+    }
+  }
+
+  $('lookup').addEventListener('submit', e => { e.preventDefault(); lookup($('card').value); });
+  // Explicit Enter handling rather than relying on implicit form submission, which some
+  // embedded browsers and automation tools don't trigger. preventDefault stops a double lookup.
+  $('card').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); lookup($('card').value); }
+  });
+  connect();
+  refreshInstances();
+  setInterval(refreshInstances, 5000);
+})();
+</script>
+</body>
+</html>

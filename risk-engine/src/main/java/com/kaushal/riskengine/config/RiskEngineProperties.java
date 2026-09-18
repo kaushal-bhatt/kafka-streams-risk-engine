@@ -24,15 +24,15 @@ public record RiskEngineProperties(
         @DefaultValue("localhost:8088") String applicationServer,
 
         /**
-         * Stage 6 raises this to 1 so a second instance keeps a warm copy of every store and
-         * the query API survives an instance dying.
+         * One warm copy of every store on another instance, so queries survive an instance
+         * dying (as stale reads) and takeover skips the full changelog replay.
          */
-        @DefaultValue("0") int numStandbyReplicas,
+        @DefaultValue("1") int numStandbyReplicas,
 
         /**
-         * Stage 6 switches this to {@code exactly_once_v2}. Left at-least-once for now so the
-         * cost of EOS can be measured as a deliberate before/after rather than assumed.
+         * {@code exactly_once_v2} by default. Set {@code at_least_once} to measure the
+         * difference with the latency probe; see the README.
          */
-        @DefaultValue("at_least_once") String processingGuarantee
+        @DefaultValue("exactly_once_v2") String processingGuarantee
 ) {
 }

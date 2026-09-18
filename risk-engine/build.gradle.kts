@@ -18,6 +18,9 @@ dependencies {
 
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+    // /actuator/prometheus: decision and rule counters, DLQ count, and every Kafka Streams
+    // metric (lag, process latency, state store sizes) in a format Prometheus scrapes.
+    runtimeOnly("io.micrometer:micrometer-registry-prometheus")
     implementation("org.springframework.kafka:spring-kafka")
     implementation("org.apache.kafka:kafka-streams")
 

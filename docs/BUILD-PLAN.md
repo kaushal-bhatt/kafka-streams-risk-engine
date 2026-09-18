@@ -8,8 +8,10 @@ Stack: Java 21, Spring Boot 3.3.5, Gradle 9.6 Kotlin DSL (matching
 `kafka-wikimedia-stream-pipeline`), Confluent Kafka Streams + Avro + Schema Registry,
 Testcontainers, Docker Compose.
 
-**Progress: stages 0, 1 and 2 are done.** 18 tests pass, and each stage has been verified
-against the live Docker stack, not only in `TopologyTestDriver`.
+**Progress: stages 0–3 and 6 are done.** 38 tests pass, and each stage has been verified
+against the live Docker stack, not only in `TopologyTestDriver`. Stages 3 and 6 were verified
+with two instances. Stage 6 was pulled ahead of 4 and 5 while the stage 3 failover
+measurement was fresh.
 
 ---
 
@@ -72,7 +74,18 @@ event-time `TimestampExtractor` (brought forward from stage 4), `CARD_NOT_ACTIVE
 
 ---
 
-## Stage 3 — Interactive Queries and the dashboard
+## Stage 3 — Interactive Queries and the dashboard ✅
+
+Built as planned. The query assembles all five card stores (profile, spend, location,
+velocity, last decision), not just the profile. It queries only the one partition that holds
+the card (`StoreQueryParameters.withPartition`). The "second instance behind nginx" is
+replaced by running a second `bootRun`, which shows the same routing with less setup. The
+dashboard's feed is a plain consumer assigned every partition, so each instance shows all
+traffic.
+
+Measured in live verification: routing correct in both directions; killing one of two
+instances gave `503 owner unreachable` for ~35 s, then the survivor served the same data
+restored from changelogs. That 35 s is the baseline for the stage 6 standby-replica demo.
 
 - Materialise `CardRiskProfile` into a queryable store
 - `GET /risk/cards/{cardId}` reading the local store
@@ -118,7 +131,21 @@ not a stream of intermediate updates.
 
 ---
 
-## Stage 6 — Production hardening
+## Stage 6 — Production hardening ✅ (except Grafana)
+
+Built: exactly-once v2, a synchronous DLQ with provenance headers, standby replicas with
+automatic stale-read fallback in the query routing, a `deviceFingerprint` schema evolution
+verified against an engine running the old code, Prometheus metrics, and a `latency` probe in
+the traffic generator. Not built: the Prometheus + Grafana compose services and dashboard.
+Also not built: a `ProductionExceptionHandler`. The default already fails on every
+production error, which is the intended behaviour, so there was nothing to add.
+
+Measured live, with the numbers in the README: standby failover served reads 0.4 s after a
+hard kill, against a ~35 s outage without standbys. EOS against ALOS latency showed no EOS
+penalty at 20 tx/s. The DLQ caught a raw-JSON poison pill with full provenance and the engine
+kept running.
+
+### Original plan
 
 - `exactly_once_v2` on the decision path, with the latency cost measured and written down
 - DLQ: custom `DeserializationExceptionHandler`, failure metadata in headers

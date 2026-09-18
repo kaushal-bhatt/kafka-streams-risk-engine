@@ -1,9 +1,10 @@
 package com.kaushal.riskengine.config;
 
+import com.kaushal.riskengine.errors.DeadLetterPublisher;
+import com.kaushal.riskengine.errors.DeadLetterQueueHandler;
 import io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.StreamsConfig;
-import org.apache.kafka.streams.errors.LogAndContinueExceptionHandler;
 import org.apache.kafka.streams.errors.StreamsUncaughtExceptionHandler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -20,7 +21,8 @@ import java.util.Map;
 public class StreamsConfiguration {
 
     @Bean(name = KafkaStreamsDefaultConfiguration.DEFAULT_STREAMS_CONFIG_BEAN_NAME)
-    KafkaStreamsConfiguration kafkaStreamsConfiguration(RiskEngineProperties properties) {
+    KafkaStreamsConfiguration kafkaStreamsConfiguration(RiskEngineProperties properties,
+                                                        DeadLetterPublisher deadLetterPublisher) {
         Map<String, Object> config = new HashMap<>();
 
         config.put(StreamsConfig.APPLICATION_ID_CONFIG, properties.applicationId());
@@ -35,20 +37,27 @@ public class StreamsConfiguration {
         // A topology with a default value serde is one rename away from silently
         // deserializing the wrong type.
 
+        // A warm copy of every store on another instance. It doesn't make Kafka notice a dead
+        // instance any faster - that's the session timeout. What it buys is that the survivor
+        // (a) can answer queries for the dead instance's cards immediately, as stale reads,
+        // and (b) doesn't have to replay changelogs from scratch when it takes over.
         config.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, properties.numStandbyReplicas());
+
+        // exactly_once_v2: the input offset, every state store change and the output
+        // decision commit together as one Kafka transaction. A crash can't produce a
+        // decision twice, or count one authorisation twice toward velocity. The cost -
+        // measured, see the README - is that output only becomes visible to read_committed
+        // consumers when the transaction commits, every 100 ms under EOS.
         config.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, properties.processingGuarantee());
 
-        // Needed from stage 3 so queryMetadataForKey can tell a caller which instance owns
-        // a key. Harmless before then.
+        // Lets queryMetadataForKey tell a caller which instance owns a key.
         config.put(StreamsConfig.APPLICATION_SERVER_CONFIG, properties.applicationServer());
 
-        // Stage 6 replaces this with a handler that routes the failing bytes to the DLQ
-        // topic. Continuing rather than dying is already the right call: one malformed
-        // record must not stall a partition.
-        config.put(
-                StreamsConfig.DEFAULT_DESERIALIZATION_EXCEPTION_HANDLER_CLASS_CONFIG,
-                LogAndContinueExceptionHandler.class
-        );
+        // Poison pills go to the dead-letter topic with the reason attached, and the partition
+        // keeps moving. The handler is instantiated by Kafka, so it gets its publisher through
+        // the config map rather than from Spring.
+        config.put(StreamsConfig.DEFAULT_DESERIALIZATION_EXCEPTION_HANDLER_CLASS_CONFIG, DeadLetterQueueHandler.class);
+        config.put(DeadLetterQueueHandler.PUBLISHER_CONFIG, deadLetterPublisher);
 
         return new KafkaStreamsConfiguration(config);
     }

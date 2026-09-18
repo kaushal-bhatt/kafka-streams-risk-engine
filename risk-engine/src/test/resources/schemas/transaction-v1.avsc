@@ -1,0 +1,47 @@
+{
+  "type" : "record",
+  "name" : "Transaction",
+  "namespace" : "com.kaushal.riskengine.avro",
+  "doc" : "An authorisation request. Keyed by cardId on payments.transactions.v1 so that\nper-card ordering holds and the card's state stores live on one partition.",
+  "fields" : [ {
+    "name" : "transactionId",
+    "type" : "string"
+  }, {
+    "name" : "cardId",
+    "type" : "string"
+  }, {
+    "name" : "merchantId",
+    "type" : "string"
+  }, {
+    "name" : "amountMinor",
+    "type" : "long",
+    "doc" : "Minor units (cents). Money is never a float."
+  }, {
+    "name" : "currency",
+    "type" : "string",
+    "default" : "EUR"
+  }, {
+    "name" : "eventTime",
+    "type" : {
+      "type" : "long",
+      "logicalType" : "timestamp-millis"
+    },
+    "doc" : "When the terminal saw it, not when Kafka received it. Drives the TimestampExtractor."
+  }, {
+    "name" : "lat",
+    "type" : "double"
+  }, {
+    "name" : "lon",
+    "type" : "double"
+  }, {
+    "name" : "category",
+    "type" : [ "null", "string" ],
+    "doc" : "Merchant category as reported at the point of sale, where available.",
+    "default" : null
+  }, {
+    "name" : "labelledFraud",
+    "type" : [ "null", "boolean" ],
+    "doc" : "Ground-truth label, present only when replaying a labelled dataset.\nCarried through to Decision so precision/recall can be computed downstream.",
+    "default" : null
+  } ]
+}

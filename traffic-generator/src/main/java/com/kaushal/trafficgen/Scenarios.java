@@ -150,7 +150,8 @@ public class Scenarios {
         Thread.sleep(config.pauseFor(gap.toMillis()));
 
         Instant second = first.plus(gap);
-        emit(card.getCardId(), remote, 8_900L, second);
+        // The fraudster's phone, not the cardholder's.
+        emit(card.getCardId(), remote, 8_900L, second, "device-unrecognised-" + Integer.toHexString(remote.hashCode()));
 
         double km = Geo.distanceKm(home.getLat(), home.getLon(), remote.getLat(), remote.getLon());
         double kmh = Geo.impliedKmh(km, gap.toMillis());
@@ -208,8 +209,48 @@ public class Scenarios {
         });
     }
 
+    /**
+     * Sends transactions at a steady rate and times each one from send to its decision being
+     * readable by a {@code read_committed} consumer - the latency a downstream system actually
+     * sees. Run it once with the engine on {@code exactly_once_v2} and once on
+     * {@code at_least_once} to measure what exactly-once costs.
+     */
+    public void latency(int count) throws InterruptedException {
+        try (LatencyProbe probe = new LatencyProbe(config)) {
+            probe.start();
+            Random random = new Random(config.seed());
+            List<Card> cards = reference.cards();
+            for (int i = 0; i < count; i++) {
+                Card card = cards.get(random.nextInt(cards.size()));
+                List<Merchant> local = localMerchants(card);
+                Transaction sent = transaction(card.getCardId(), local.get(random.nextInt(local.size())),
+                        1_000 + random.nextInt(4_000), Instant.now(), device(card.getCardId()));
+                probe.sent(sent.getTransactionId());
+                publisher.send(Topics.TRANSACTIONS, card.getCardId(), sent);
+                // 20 per second: a steady load, not a burst the broker has to queue.
+                Thread.sleep(50);
+            }
+            publisher.flush();
+            probe.awaitAndReport(Duration.ofSeconds(30));
+        }
+    }
+
     private void emit(String cardId, Merchant merchant, long amountMinor, Instant eventTime) {
-        Transaction transaction = Transaction.newBuilder()
+        emit(cardId, merchant, amountMinor, eventTime, device(cardId));
+    }
+
+    private void emit(String cardId, Merchant merchant, long amountMinor, Instant eventTime, String device) {
+        publisher.send(Topics.TRANSACTIONS, cardId, transaction(cardId, merchant, amountMinor, eventTime, device));
+    }
+
+    /** The cardholder's own device: stable per card, so a future rule can spot a new one. */
+    private static String device(String cardId) {
+        return "device-" + Integer.toHexString(cardId.hashCode());
+    }
+
+    private static Transaction transaction(String cardId, Merchant merchant, long amountMinor, Instant eventTime,
+                                           String device) {
+        return Transaction.newBuilder()
                 .setTransactionId(UUID.randomUUID().toString())
                 .setCardId(cardId)
                 .setMerchantId(merchant.getMerchantId())
@@ -220,8 +261,7 @@ public class Scenarios {
                 .setLat(merchant.getLat())
                 .setLon(merchant.getLon())
                 .setCategory(merchant.getMcc())
+                .setDeviceFingerprint(device)
                 .build();
-
-        publisher.send(Topics.TRANSACTIONS, cardId, transaction);
     }
 }
