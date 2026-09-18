@@ -7,8 +7,9 @@ hot path.
 Built with Java 21, Spring Boot 3, Kafka Streams, Avro and Schema Registry, with Kafka running
 in KRaft mode.
 
-> **Status: work in progress.** The enrichment stage is built and tested; the risk rules come
-> next. See the [roadmap](#roadmap) for what is done and what is planned. Nothing below claims
+> **Status: work in progress.** Enrichment and the decision path are built, tested and
+> verified against a live stack. Every transaction gets an APPROVE / REVIEW / DECLINE with
+> human-readable reasons. See the [roadmap](#roadmap) for what is planned. Nothing below claims
 > a feature that isn't in the code.
 
 ---
@@ -39,25 +40,64 @@ A lookup is a local read, not a network call.
 
 ## What it does today
 
-The **enrichment stage** is complete. Each incoming transaction is joined with its card
-profile and merchant using three different join types, each picked for a specific reason:
-
 ```
-payments.transactions.v1             KStream, keyed by cardId
+payments.transactions.v1              KStream, keyed by cardId, timestamped by eventTime
         │
-        ├── join ───── cardProfiles  KTable  ◄── cards ⋈ customers (foreign-key join)
-        │
-        ├── leftJoin ─ merchants     GlobalKTable
+        ├── leftJoin ── cardProfiles  KTable  ◄── cards ⋈ customers (foreign-key join)
+        ├── leftJoin ── merchants     GlobalKTable
         │
         ▼
-payments.enriched.v1
+RiskEvaluator                         Processor API, owns three state stores
+   ├─ velocity-store                  every attempt, window store, expires after 1 h
+   ├─ spend-store                     approved spend today, per card
+   ├─ geo-store                       last location, per card
+   └─ punctuator                      evicts stale state hourly (wall-clock)
+        │
+        ▼
+payments.decisions.v1                 APPROVE / REVIEW / DECLINE + score + reasons
 ```
+
+### Enrichment: three joins, three reasons
 
 | Join | Why this type |
 |---|---|
 | **cards ⋈ customers** (table–table, foreign key) | A card's customer almost never changes, but transactions arrive constantly. Joining the tables costs one lookup per card change. Joining on the stream would cost one per transaction. |
-| **transactions ⋈ cardProfiles** (stream–table) | Both are keyed by `cardId` with the same partition count, so the join is local and needs no repartition. |
-| **… ⋈ merchants** (stream–GlobalKTable) | The stream is keyed by card, not merchant. A normal table join would force a repartition on every authorisation. A GlobalKTable is copied to every instance, so it can be looked up by any key. |
+| **transactions ⟕ cardProfiles** (stream–table, left) | Both are keyed by `cardId` with the same partition count, so the join is local and needs no repartition. It's a *left* join so that an unknown card is sent to review rather than silently dropped. |
+| **… ⟕ merchants** (stream–GlobalKTable) | The stream is keyed by card, not merchant. A normal table join would force a repartition on every authorisation. A GlobalKTable is copied to every instance, so it can be looked up by any key. |
+
+### Decisions: the Processor API, on purpose
+
+A DSL aggregation like `groupByKey().windowedBy(...).count()` *emits* its result downstream.
+That's the right shape for publishing a statistic, and the wrong shape for a decision. To
+decide on the transaction in hand, the engine has to *read* the card's recent history, combine
+several reads into one verdict, and then update that history according to the verdict.
+`RiskEvaluator` does all of that in one `process()` call against three local stores. It uses
+one range scan of the window store to answer both the velocity rule and the card-testing rule.
+
+| Rule | Fires when | Score |
+|---|---|---|
+| `VELOCITY` | More than 5 attempts on one card in 60 s | 45 |
+| `CARD_TESTING` | 4 or more attempts under €2 across 3 or more merchants in 10 min | 60 |
+| `DAILY_LIMIT` | This transaction would take the card past its daily limit | 80 |
+| `GEO_VELOCITY` | Implied speed since the last location is over 900 km/h (ignored under 100 km) | 80 |
+| `MERCHANT_RISK` | Gambling, quasi-cash, money-transfer or card-not-present category | 20 |
+| `UNKNOWN_CARD` | The card isn't in the reference data | 50 |
+| `CARD_NOT_ACTIVE` | The card is blocked or expired | 100 |
+| `CUSTOMER_RISK_TIER` | The customer is HIGH risk tier. Only escalates, never triggers on its own | 10 |
+
+Scores add up, capped at 100: **under 40 approve, 40–70 review, over 70 decline.**
+
+**State follows the verdict.** Every attempt counts toward velocity, because a card tester's
+rejected attempts are exactly the signal. But a **declined** transaction doesn't add to daily
+spend, since the money never moved. It also doesn't move the card's last-known location.
+Otherwise one fraudulent charge in São Paulo would make the real cardholder's next purchase
+in Berlin look like impossible travel, and the fraud would lock the victim out. There's a test
+for exactly that.
+
+**State is bounded.** The window store expires on its own. The two key-value stores would
+grow by one entry per card forever, so a wall-clock punctuator evicts stale entries every hour.
+It runs on the wall clock, not stream time, because stream time only advances when records
+arrive. An idle partition would never clean up.
 
 Also in place:
 
@@ -121,11 +161,24 @@ In a second terminal:
 Every scenario publishes the reference data (cards, customers, merchants) first, so each one
 works on its own.
 
+The generator prints what to expect:
+
+```
+impossible-travel: CARD-0003 at ElektroMarkt Berlin (DE)
+impossible-travel: then BR - 10252 km in 4 min, implies 153782 km/h
+expect:   first APPROVE, second DECLINE (GEO_VELOCITY)
+```
+
 ### 4. Look at the result
 
-Open **kafka-ui** at <http://localhost:8089>, go to **Topics → payments.enriched.v1 →
-Messages**. Each record now carries the transaction together with the card's daily limit, the
-customer's risk tier and the merchant's category code.
+The engine logs every REVIEW and DECLINE with its reasons:
+
+```
+DECLINE CARD-0003 EUR 89.00 score=90 - GEO_VELOCITY (10253 km from DE to BR in 4m 0s implies 153793 km/h); CUSTOMER_RISK_TIER (customer is HIGH risk tier)
+```
+
+In **kafka-ui** at <http://localhost:8089>, open **Topics → payments.decisions.v1 → Messages**
+to see every decision, and **payments.enriched.v1** to see the joined data that fed it.
 
 ---
 
@@ -155,14 +208,18 @@ docker compose logs -f kafka
 ./gradlew :traffic-generator:run --args="<scenario> [flags]"
 ```
 
-| Scenario | What it sends |
-|---|---|
-| `seed` | Only the reference data: 500 customers and cards, 60 merchants |
-| `baseline` | Ordinary traffic that should not trigger any rule (`--limit=N`, default 500) |
-| `card-testing` | 20 authorisations under €2 on one card, spread across 8 merchants |
-| `impossible-travel` | Berlin, then São Paulo four minutes later in event time |
-| `limit-breach` | Walks a card up to its daily limit, then one transaction past it |
-| `replay` | Replays the labelled Sparkov dataset (see [below](#replaying-real-labelled-data)) |
+| Scenario | What it sends | What the engine decides |
+|---|---|---|
+| `seed` | Only the reference data: 500 customers and cards, 60 merchants | nothing |
+| `baseline` | Ordinary purchases, each card near its home (`--limit=N`, default 500) | APPROVE, with `MERCHANT_RISK` noted on casino and crypto merchants |
+| `card-testing` | 20 authorisations under €2 on one card, across 8 merchants | 3 APPROVE, then REVIEW (`CARD_TESTING`), then DECLINE once `VELOCITY` joins in |
+| `impossible-travel` | Home, then São Paulo four minutes later in event time | APPROVE, then DECLINE (`GEO_VELOCITY`) |
+| `limit-breach` | Walks a card up to its daily limit, then one transaction past it | 4 APPROVE, then DECLINE (`DAILY_LIMIT`) |
+| `replay` | Replays the labelled Sparkov dataset (see [below](#replaying-real-labelled-data)) | measured in stage 7 |
+
+The engine remembers. If you run `limit-breach` twice on the same day, the card declines sooner
+the second time because its approved spend is already near the limit. That's the engine
+working as intended. Reset (see below) to replay a scenario from a clean slate.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -178,7 +235,7 @@ kafka-ui is the easiest way to look at topics. For a terminal view, the Schema R
 container already includes an Avro-aware console consumer:
 
 ```bash
-docker exec -it risk-schema-registry kafka-avro-console-consumer --bootstrap-server kafka:29092 --topic payments.enriched.v1 --from-beginning --property schema.registry.url=http://localhost:8081
+docker exec -it risk-schema-registry kafka-avro-console-consumer --bootstrap-server kafka:29092 --topic payments.decisions.v1 --from-beginning --property schema.registry.url=http://localhost:8081
 ```
 
 ### Tests
@@ -187,8 +244,20 @@ docker exec -it risk-schema-registry kafka-avro-console-consumer --bootstrap-ser
 ./gradlew test
 ```
 
-The topology tests use `TopologyTestDriver` and an in-memory mock Schema Registry, so they need
-no running infrastructure.
+18 tests, driven through `TopologyTestDriver` with an in-memory mock Schema Registry, so they
+need no running infrastructure. Each rule has its own test, including the edge cases that
+matter:
+
+- the declined amount doesn't count toward the daily limit
+- a real 14-hour flight isn't impossible travel
+- neighbouring shops seconds apart aren't flagged
+- a fraudulent location doesn't lock out the cardholder
+
+The eviction punctuator is tested by moving the test clock forward 8 days.
+
+Unit tests aren't enough on their own. `TopologyTestDriver` commits after every record, which
+once hid a real bug (see [Things that bit me](#things-that-bit-me)). So each stage is also
+verified against the live Docker stack before it's called done.
 
 ### Replaying real, labelled data
 
@@ -219,19 +288,27 @@ chosen over the better-known one.
 docker compose down
 ```
 
-Kafka's data isn't kept in a volume, so this wipes every topic. Also delete the engine's local
-state, otherwise it will not match the fresh Kafka:
+Kafka's data isn't kept in a volume, so this wipes every topic **and the Schema Registry**.
+Stop the engine first, then delete its local state in `state/` at the repo root:
 
 ```bash
-rm -rf risk-engine/state
+rm -rf state
 ```
+
+On Windows PowerShell: `Remove-Item -Recurse -Force state`.
+
+**This step isn't optional.** The engine's local RocksDB state stores values tagged with Schema
+Registry IDs. After a reset the new registry doesn't know those IDs, and the engine
+crash-loops with `Schema N not found; error code: 40403` the first time it reads one.
 
 ### Troubleshooting
 
 | Symptom | Cause |
 |---|---|
+| Engine crash-loops with `Schema N not found; error code: 40403` | Local state from before a `docker compose down` survived. Stop the engine, delete `state/` at the repo root, and start it again. |
 | Engine logs `MissingSourceTopicException` | It started before `init-topics` finished. Wait for `topics ready` and restart it. |
-| Some transactions missing from `payments.enriched.v1` | A transaction that arrives before its card profile has been built is dropped by the inner join. That's a known gap, fixed in stage 2. The scenarios pause briefly after seeding to avoid it. If you publish cards and transactions yourself, leave a second between them. |
+| A known card gets `UNKNOWN_CARD` | Its transaction overtook its card profile, which is built by a foreign-key join through internal topics. This happens mainly when the engine starts with a backlog. The transaction is reviewed, not lost. The scenarios pause briefly after seeding to avoid it. |
+| A purchase at home is declined for `GEO_VELOCITY` | The card's last known location is somewhere far away and recent. Old test data is the usual cause. Reset to start from a clean slate. |
 | `curl localhost:8080/...` returns something that isn't this app | The engine runs on **8088**. Port 8080 is often taken by another local project. |
 | `create-topics.sh: $'\r': command not found` | The script was checked out with Windows line endings. `.gitattributes` prevents this on a fresh clone. |
 | `Bind for 0.0.0.0:8089 failed: port is already allocated` | Something else is using the port. Pick another: `KAFKA_UI_PORT=8189 docker compose up -d`. For the engine, set `SERVER_PORT` and `APPLICATION_SERVER=localhost:<port>` together. |
@@ -243,8 +320,8 @@ rm -rf risk-engine/state
 
 - [x] **Stage 0: Skeleton.** Gradle multi-module build, Avro model, KRaft stack, topic setup
 - [x] **Stage 1: Enrichment.** Three join types, tests, traffic generator, dataset replay
-- [ ] **Stage 2: Decision path.** A custom Processor API node with its own state stores for
-      velocity, daily limits and impossible travel, plus a punctuator that keeps state bounded
+- [x] **Stage 2: Decision path.** A custom Processor API node with three state stores, eight
+      rules, verdict-dependent state updates and a punctuator that keeps state bounded
 - [ ] **Stage 3: Interactive Queries.** Serve risk profiles over HTTP straight from the state
       stores, route queries between instances, and add a live dashboard
 - [ ] **Stage 4: Analytics path.** Windowed merchant decline rates with a grace period and
@@ -279,7 +356,8 @@ kafka-streams-risk-engine/
 ├── risk-engine/          Spring Boot + Kafka Streams application
 │   └── src/main/java/com/kaushal/riskengine/
 │       ├── config/       Streams configuration, Avro serdes, properties
-│       ├── topology/     The stream processing topology
+│       ├── topology/     Enrichment and decision topologies, event-time extractor
+│       ├── decision/     RiskEvaluator processor, its stores, the rules and thresholds
 │       └── health/       Health check that reports the Kafka Streams state
 ├── traffic-generator/    Seeded fraud scenarios and the dataset replay
 ├── docker/               Topic creation script

@@ -84,7 +84,12 @@ protocol RiskModel {
   /** Output of the enrichment stage, before any rule has run. */
   record EnrichedTransaction {
     Transaction transaction;
-    CardProfile cardProfile;
+    /** Null when the card is unknown to the engine. Stage 1 declared this non-null and
+        dropped such transactions in an inner join; stage 2 made it nullable so an unknown
+        card reaches the rules and produces a REVIEW instead of vanishing. Changing a
+        record field to a union with null is a BACKWARD-compatible evolution: the new
+        schema reads every record written under the old one. */
+    union { null, CardProfile } cardProfile = null;
     /** Null when the merchant is not yet in the GlobalKTable. The rules must cope
         with this rather than assume it is populated. */
     union { null, Merchant } merchant = null;
@@ -107,6 +112,33 @@ protocol RiskModel {
     long amountMinor;
     timestamp_ms evaluatedAt;
     union { null, boolean } labelledFraud = null;
+  }
+
+  // --- State store values for the decision path -------------------------------------
+
+  /** One authorisation attempt, kept in the velocity window store. Every attempt is
+      recorded, including declined ones: a bot's rejected attempts are exactly the signal. */
+  record VelocityEntry {
+    string transactionId;
+    long amountMinor;
+    string merchantId;
+  }
+
+  /** Approved spend for one card on one UTC day. Declined amounts are never added. */
+  record DailySpend {
+    /** Days since the epoch, UTC. A new day resets the total. */
+    long epochDay;
+    long spentMinor;
+  }
+
+  /** The last location the card was used at. Only updated by transactions that were not
+      declined, so a fraudulent charge abroad cannot make the cardholder's next genuine
+      purchase at home look like impossible travel. */
+  record LastSeen {
+    double lat;
+    double lon;
+    timestamp_ms seenAt;
+    union { null, string } place = null;
   }
 
   /** Windowed decline rate per merchant, emitted once per closed window. */

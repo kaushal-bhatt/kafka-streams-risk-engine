@@ -6,6 +6,13 @@ plugins {
 val confluentVersion = providers.gradleProperty("confluentVersion").get()
 val testcontainersVersion = providers.gradleProperty("testcontainersVersion").get()
 
+// Run from the repo root, like IntelliJ does, so the relative state directory (./state)
+// resolves to the same place however the engine is started. Before this, bootRun put it in
+// risk-engine/state and IntelliJ in ./state - and a reset that cleaned one left the other.
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+    workingDir = rootProject.projectDir
+}
+
 dependencies {
     implementation(project(":common-avro"))
 

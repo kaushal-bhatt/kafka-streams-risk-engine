@@ -8,7 +8,8 @@ Stack: Java 21, Spring Boot 3.3.5, Gradle 9.6 Kotlin DSL (matching
 `kafka-wikimedia-stream-pipeline`), Confluent Kafka Streams + Avro + Schema Registry,
 Testcontainers, Docker Compose.
 
-**Progress: stages 0 and 1 are done.** The build is green and the enrichment tests pass.
+**Progress: stages 0, 1 and 2 are done.** 18 tests pass, and each stage has been verified
+against the live Docker stack, not only in `TopologyTestDriver`.
 
 ---
 
@@ -50,7 +51,11 @@ the same key. Write down what actually went wrong — it becomes a good README f
 
 ---
 
-## Stage 2 — The decision path
+## Stage 2 — The decision path ✅
+
+Built as planned, plus: a left join so unknown cards are reviewed rather than dropped, an
+event-time `TimestampExtractor` (brought forward from stage 4), `CARD_NOT_ACTIVE`,
+`CARD_TESTING` and `MERCHANT_RISK` rules, and state updates that depend on the verdict.
 
 - `RiskEvaluator` as a Processor API node
 - Stores: `velocity-store` (WindowStore, 1 h retention), `spend-store`, `geo-store`

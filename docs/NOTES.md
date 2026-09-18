@@ -49,6 +49,63 @@ The lesson: **default caching trades latency for throughput, and a unit test har
 commits on every record hides that trade completely.** Any Kafka Streams path where table
 freshness matters needs this decided on purpose.
 
+## Local state outlived the cluster it belonged to
+
+Symptom: after `docker compose down` and `up`, the engine crash-looped on the very first
+transaction:
+
+```
+SerializationException: Error retrieving Avro value schema for id 5
+Caused by: RestClientException: Schema 5 not found; error code: 40403
+  ... KTableSourceValueGetter.get -> KStreamKTableJoinProcessor.doJoin
+```
+
+Cause: two things lined up.
+
+1. **The reset missed the state directory.** `state.dir` is the relative path `./state`.
+   IntelliJ runs the app from the repo root and `gradlew bootRun` ran it from `risk-engine/`,
+   so the state lived in different places depending on how the engine was started. The reset
+   instructions deleted `risk-engine/state`, while the state was actually in `./state`.
+2. **Local state isn't self-contained.** Every Avro value in RocksDB starts with a Schema
+   Registry ID. `docker compose down` wiped the registry, so the fresh one had never issued
+   ID 5. The engine trusted its local checkpoint, read a stored card profile during the join,
+   asked the new registry for schema 5, and failed. `REPLACE_THREAD` then restarted the thread
+   straight into the same failure.
+
+Fix: `bootRun` now runs from the repo root too, so `./state` is in one place whichever way the
+engine is started. The README reset steps say where it is and why deleting it isn't optional.
+
+The general lesson: **a Kafka Streams application's local state is only valid alongside the
+exact cluster and registry that produced it.** Restore it from the changelog, or delete it.
+Never carry it across a rebuilt environment.
+
+## Stage 2 trade-offs, found while verifying against the live stack
+
+These aren't bugs. They're consequences of deliberate design choices, written down so they
+don't come as a surprise.
+
+**A cold start with a backlog reviews some known cards as `UNKNOWN_CARD`.** When the engine
+starts against topics that already hold cards and transactions, it can process a transaction
+before the foreign-key join has built that card's profile. The join has to round-trip through
+two internal topics that start empty. Since stage 2 made the join a left join, those
+transactions are reviewed rather than lost. That is the right failure mode for a risk engine.
+A production system would bootstrap reference data before opening the transaction stream.
+
+**A false-positive `GEO_VELOCITY` decline repeats until enough time has passed.** Declined
+transactions deliberately don't move the card's last-known location, so that fraud abroad
+can't lock the cardholder out at home. The flip side is that if the stored location is wrong,
+for example stale test data, purchases at the real location keep being declined until the
+implied speed drops below 900 km/h. Dublin to Berlin (1,300 km) clears after about 90
+minutes. In the live verification a card had "Dublin 19 minutes ago" left over from old test
+data, and its first Berlin purchase was declined. That was correct given the history, and
+confusing until the reason detail was read. Every reason carries distances, places and times
+precisely so that this kind of thing can be diagnosed from the decision record alone.
+
+**Verification needs a card with no history.** The first attempt to verify impossible travel
+used a card that the baseline scenario had used in Paris two minutes earlier. The engine
+correctly flagged Paris to Berlin, which wasn't the test intended. Check that a card is unused
+before treating it as clean.
+
 ## PowerShell adds a byte-order mark when piping into `docker exec`
 
 Symptom: while debugging the above, hand-made probe transactions for `CARD-0003` landed on

@@ -172,13 +172,23 @@ authorisation budget. Putting the repartition where it does no harm, having just
 
 ### 4.5 Rules
 
-| Rule | State used | Fires when |
-|---|---|---|
-| R1 velocity | `velocity-store` (hopping 60 s / 10 s) | > 5 authorisations on one card in 60 s |
-| R2 daily limit | `spend-store` | `sum + amount > card.dailyLimitMinor` |
-| R3 impossible travel | `geo-store` | haversine(last, current) / Δt > 900 km/h |
-| R4 merchant risk | GlobalKTable lookup | MCC in high-risk set |
-| R5 card testing | `velocity-store` + amount predicate | ≥ 4 authorisations under €2 across ≥ 3 merchants in 10 min |
+As built in stage 2. Thresholds live in `RiskRules`, scores in the `Rule` enum.
+
+| Rule | State used | Fires when | Score |
+|---|---|---|---|
+| `VELOCITY` | `velocity-store` | > 5 attempts on one card in 60 s | 45 |
+| `CARD_TESTING` | `velocity-store` + amount predicate | ≥ 4 attempts under €2 across ≥ 3 merchants in 10 min | 60 |
+| `DAILY_LIMIT` | `spend-store` | approved spend today + amount > card limit | 80 |
+| `GEO_VELOCITY` | `geo-store` | haversine(last, current) / Δt > 900 km/h, and distance ≥ 100 km | 80 |
+| `MERCHANT_RISK` | GlobalKTable lookup | category in the high-risk set | 20 |
+| `UNKNOWN_CARD` | enrichment | no card profile | 50 |
+| `CARD_NOT_ACTIVE` | enrichment | card blocked or expired | 100 |
+| `CUSTOMER_RISK_TIER` | enrichment | HIGH tier, and another rule already fired | 10 |
+
+The velocity store is a window store with `retainDuplicates=true`. It's used as an
+append-only, time-indexed log rather than as fixed windows, so one range scan answers both
+`VELOCITY` (60 s) and `CARD_TESTING` (10 min). The 100 km minimum distance on
+`GEO_VELOCITY` exists because two shops 5 km apart, used 10 seconds apart, imply 1,800 km/h.
 
 Each rule returns a weighted score and a human-readable reason. Bands: `< 40 APPROVE`,
 `40–70 REVIEW`, `> 70 DECLINE`. The `reasons[]` array goes into the decision record — a

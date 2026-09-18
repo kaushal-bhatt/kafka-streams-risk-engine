@@ -123,16 +123,17 @@ class EnrichmentTopologyTest {
     }
 
     @Test
-    @DisplayName("a transaction for an unknown card is currently dropped - see TODO(stage-2)")
-    void dropsUnknownCard() {
+    @DisplayName("a transaction for an unknown card is kept, with a null profile, not dropped")
+    void keepsUnknownCard() {
         givenReferenceData();
 
         transactions.pipeInput("CARD-NOT-SEEN", transaction("TXN-3", "CARD-NOT-SEEN", "MERCH-1", 1_000L));
 
-        // Pinning the behaviour rather than endorsing it. Stage 2 must turn this into a
-        // REVIEW decision with an UNKNOWN_CARD reason; when it does, this test should fail
-        // and be rewritten.
-        assertThat(enriched.isEmpty()).isTrue();
+        // Stage 1 pinned the opposite: an inner join dropped this record. Stage 2 switched to
+        // a left join, so the decision path sees the transaction and can REVIEW it.
+        EnrichedTransaction result = enriched.readValue();
+        assertThat(result.getCardProfile()).isNull();
+        assertThat(result.getTransaction().getTransactionId()).isEqualTo("TXN-3");
     }
 
     private void givenReferenceData() {

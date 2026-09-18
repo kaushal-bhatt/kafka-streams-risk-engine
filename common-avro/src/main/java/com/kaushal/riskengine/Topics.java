@@ -25,6 +25,11 @@ public final class Topics {
     public static final String MERCHANT_STATS = "risk.merchant-stats.v1";
     public static final String TRANSACTIONS_DLQ = "payments.transactions.dlq.v1";
 
+    /** Owned by the RiskEvaluator processor (stage 2). */
+    public static final String VELOCITY_STORE = "velocity-store";
+    public static final String SPEND_STORE = "spend-store";
+    public static final String GEO_STORE = "geo-store";
+
     /** Queryable via Interactive Queries from stage 3. */
     public static final String CARD_PROFILE_STORE = "card-profile-store";
     public static final String MERCHANT_STORE = "merchant-store";

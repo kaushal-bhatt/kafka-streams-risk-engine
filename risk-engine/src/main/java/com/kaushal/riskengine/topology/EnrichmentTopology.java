@@ -27,16 +27,18 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Component;
 
 /**
- * Stage 1 - enrichment.
+ * Enrichment: attach the card profile and the merchant to every transaction.
  *
  * <p>Three different join types, each chosen for a reason. That reasoning is the point of
  * this class; any of the three would technically "work" in the other two positions.
  *
  * <pre>
- *   cards JOIN customers            KTable-KTable foreign-key join -&gt; cardProfiles
- *   transactions JOIN cardProfiles  KStream-KTable, co-partitioned
- *   ... JOIN merchants              KStream-GlobalKTable, by a key extractor
+ *   cards JOIN customers                KTable-KTable foreign-key join -&gt; cardProfiles
+ *   transactions LEFT JOIN cardProfiles KStream-KTable, co-partitioned
+ *   ... LEFT JOIN merchants             KStream-GlobalKTable, by a key extractor
  * </pre>
+ *
+ * <p>The returned stream feeds {@link DecisionTopology}.
  */
 @Component
 public class EnrichmentTopology {
@@ -135,17 +137,21 @@ public class EnrichmentTopology {
 
         KStream<String, Transaction> transactions = builder.stream(
                 Topics.TRANSACTIONS,
-                Consumed.with(stringSerde, transactionSerde).withName("transactions-source")
+                Consumed.with(stringSerde, transactionSerde)
+                        .withTimestampExtractor(new TransactionTimestampExtractor())
+                        .withName("transactions-source")
         );
 
-        // Inner join: a transaction for a card we have never seen is dropped.
+        // leftJoin: a transaction for a card we have never seen still goes through, with a
+        // null profile.
         //
-        // TODO(stage-2): that is the wrong behaviour for a risk engine. An unknown card is
-        // itself a signal and should produce a REVIEW decision with an UNKNOWN_CARD reason,
-        // not vanish. Left as an inner join here so stage 1 stays small, but it must not
-        // ship this way.
+        // Stage 1 used an inner join, which silently dropped these. For a risk engine that
+        // is backwards: an authorisation on a card the issuer has no record of is itself a
+        // signal. The decision path turns a null profile into a REVIEW with an UNKNOWN_CARD
+        // reason. It is also the safety net for the race documented in docs/NOTES.md, where
+        // a transaction arrives before its card's profile has been built.
         KStream<String, EnrichedTransaction> enriched = transactions
-                .join(
+                .leftJoin(
                         cardProfiles,
                         (transaction, profile) -> EnrichedTransaction.newBuilder()
                                 .setTransaction(transaction)

@@ -1,35 +1,52 @@
 package com.kaushal.trafficgen;
 
+import com.kaushal.riskengine.Geo;
 import com.kaushal.riskengine.Topics;
 import com.kaushal.riskengine.avro.Card;
+import com.kaushal.riskengine.avro.Customer;
 import com.kaushal.riskengine.avro.Merchant;
 import com.kaushal.riskengine.avro.Transaction;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Scripted traffic. Every scenario is seeded, so the same command produces the same
- * decisions every time - which is what makes the dashboard demo repeatable and the
- * recorded GIF honest.
+ * decisions every time - which is what makes the demo repeatable and the recorded GIF honest.
+ *
+ * <p>Each card shops near its customer's home. That matters since stage 2: the engine checks
+ * impossible travel, so a generator that sends one card to Berlin and then Lisbon a minute
+ * later is generating fraud whether it means to or not.
  */
 public class Scenarios {
+
+    /** How long to let the engine build card profiles before sending transactions. */
+    private static final long REFERENCE_SETTLE_MILLIS = 3_000;
+
+    /** A merchant within this distance of the customer's home counts as local. */
+    private static final double LOCAL_RADIUS_KM = 50;
 
     private final Config config;
     private final Publisher publisher;
     private final ReferenceData.Seeded reference;
+    private final Map<String, Customer> customersById;
+    private final Map<String, List<Merchant>> localMerchantsByCard = new HashMap<>();
 
     public Scenarios(Config config, Publisher publisher, ReferenceData.Seeded reference) {
         this.config = config;
         this.publisher = publisher;
         this.reference = reference;
+        this.customersById = reference.customers().stream()
+                .collect(Collectors.toMap(Customer::getCustomerId, Function.identity()));
     }
-
-    /** How long to let the engine build card profiles before sending transactions. */
-    private static final long REFERENCE_SETTLE_MILLIS = 3_000;
 
     /** Publishes the compacted reference topics. Stage 5 hands this job to Debezium. */
     public void seed() throws InterruptedException {
@@ -42,23 +59,23 @@ public class Scenarios {
 
         // A card profile is built by a foreign-key join that makes a round trip through two
         // internal topics. Sub-second with caching disabled on the reference stores, but a
-        // transaction sent in the same instant can still beat it and be dropped by the inner
-        // join. A short pause keeps the demo deterministic. See docs/NOTES.md.
+        // transaction sent in the same instant can still beat it. A short pause keeps the
+        // demo deterministic. See docs/NOTES.md.
         Thread.sleep(REFERENCE_SETTLE_MILLIS);
     }
 
     /**
-     * Ordinary traffic. Nothing here should trip a rule; it exists so the dashboard has a
-     * baseline for the fraud scenarios to stand out against.
+     * Ordinary traffic. Should approve almost everything; the only reasons expected are
+     * MERCHANT_RISK on the odd casino or crypto purchase.
      */
     public void baseline(int count) throws InterruptedException {
         Random random = new Random(config.seed());
         List<Card> cards = reference.cards();
-        List<Merchant> merchants = reference.merchants();
 
         for (int i = 0; i < count; i++) {
             Card card = cards.get(random.nextInt(cards.size()));
-            Merchant merchant = merchants.get(random.nextInt(merchants.size()));
+            List<Merchant> local = localMerchants(card);
+            Merchant merchant = local.get(random.nextInt(local.size()));
             // Between EUR 3 and EUR 120.
             long amountMinor = 300 + random.nextInt(11_700);
 
@@ -70,6 +87,7 @@ public class Scenarios {
         }
         publisher.flush();
         System.out.println("baseline: sent " + count + " transactions");
+        System.out.println("expect:   almost all APPROVE; MERCHANT_RISK noted on casino/crypto merchants");
     }
 
     /**
@@ -78,22 +96,24 @@ public class Scenarios {
      */
     public void cardTesting() throws InterruptedException {
         Card card = reference.cards().get(7);
-        List<Merchant> merchants = reference.merchants();
+        List<Merchant> local = localMerchants(card);
+        List<Merchant> rotation = local.subList(0, Math.min(8, local.size()));
         Random random = new Random(config.seed());
 
-        System.out.println("card-testing: hammering " + card.getCardId());
+        System.out.printf("card-testing: 20 authorisations under EUR 2 on %s across %d merchants%n",
+                card.getCardId(), rotation.size());
         for (int i = 0; i < 20; i++) {
-            Merchant merchant = merchants.get(i % Math.min(8, merchants.size()));
-            // Under EUR 2 - the classic card-testing signature.
+            Merchant merchant = rotation.get(i % rotation.size());
             long amountMinor = 20 + random.nextInt(160);
             emit(card.getCardId(), merchant, amountMinor, Instant.now());
             Thread.sleep(config.pauseFor(Duration.ofSeconds(9).toMillis()));
         }
         publisher.flush();
+        System.out.println("expect:   first 3 APPROVE, then REVIEW (CARD_TESTING), then DECLINE once VELOCITY joins in");
     }
 
     /**
-     * Two authorisations that no single cardholder could have made: Berlin, then Sao Paulo
+     * Two authorisations that no single cardholder could have made: home, then Sao Paulo
      * four minutes later.
      *
      * <p>The remote merchant is published as part of the scenario, because the seeded
@@ -103,7 +123,7 @@ public class Scenarios {
      */
     public void impossibleTravel() throws InterruptedException {
         Card card = reference.cards().get(3);
-        Merchant home = reference.merchants().get(0);
+        Merchant home = localMerchants(card).get(0);
 
         Merchant remote = Merchant.newBuilder()
                 .setMerchantId("MERCH-SAOPAULO")
@@ -125,7 +145,7 @@ public class Scenarios {
         Duration gap = Duration.ofMinutes(4);
         Instant first = Instant.now().minus(gap);
         emit(card.getCardId(), home, 3_450L, first);
-        System.out.printf("impossible-travel: %s in %s%n", card.getCardId(), home.getCountry());
+        System.out.printf("impossible-travel: %s at %s (%s)%n", card.getCardId(), home.getName(), home.getCountry());
 
         Thread.sleep(config.pauseFor(gap.toMillis()));
 
@@ -133,37 +153,59 @@ public class Scenarios {
         emit(card.getCardId(), remote, 8_900L, second);
 
         double km = Geo.distanceKm(home.getLat(), home.getLon(), remote.getLat(), remote.getLon());
-        double kmh = Geo.impliedKmh(km, Duration.ofMinutes(4).toMillis());
+        double kmh = Geo.impliedKmh(km, gap.toMillis());
         System.out.printf("impossible-travel: then %s - %.0f km in 4 min, implies %.0f km/h%n",
                 remote.getCountry(), km, kmh);
 
         publisher.flush();
+        System.out.println("expect:   first APPROVE, second DECLINE (GEO_VELOCITY)");
     }
 
     /** Walks a card up to its daily limit and one transaction past it. */
     public void limitBreach() throws InterruptedException {
         Card card = reference.cards().get(11);
-        List<Merchant> merchants = reference.merchants();
+        List<Merchant> local = localMerchants(card);
         long limit = card.getDailyLimitMinor();
 
-        System.out.printf("limit-breach: %s has a daily limit of %d minor units%n",
-                card.getCardId(), limit);
+        System.out.printf("limit-breach: %s has a daily limit of EUR %d.%02d%n",
+                card.getCardId(), limit / 100, limit % 100);
 
         long spent = 0;
         int i = 0;
-        // Five roughly equal steps to just under the limit, then one that crosses it.
+        // Four steps of a fifth of the limit, then one that crosses it.
         long step = limit / 5;
         while (spent + step < limit) {
-            emit(card.getCardId(), merchants.get(i++ % merchants.size()), step, Instant.now());
+            emit(card.getCardId(), local.get(i++ % local.size()), step, Instant.now());
             spent += step;
             Thread.sleep(config.pauseFor(Duration.ofSeconds(20).toMillis()));
         }
 
         long overshoot = (limit - spent) + 5_000L;
-        emit(card.getCardId(), merchants.get(i % merchants.size()), overshoot, Instant.now());
-        System.out.printf("limit-breach: spent %d, then attempted %d%n", spent, overshoot);
+        emit(card.getCardId(), local.get(i % local.size()), overshoot, Instant.now());
+        System.out.printf("limit-breach: spent EUR %d.%02d, then attempted EUR %d.%02d%n",
+                spent / 100, spent % 100, overshoot / 100, overshoot % 100);
 
         publisher.flush();
+        System.out.println("expect:   4 APPROVE, then DECLINE (DAILY_LIMIT)");
+    }
+
+    /**
+     * Merchants within {@link #LOCAL_RADIUS_KM} of the customer's home, nearest first.
+     * Falls back to the three nearest merchants overall if too few are local.
+     */
+    private List<Merchant> localMerchants(Card card) {
+        return localMerchantsByCard.computeIfAbsent(card.getCardId(), id -> {
+            Customer customer = customersById.get(card.getCustomerId());
+            Comparator<Merchant> byDistance = Comparator.comparingDouble(m ->
+                    Geo.distanceKm(customer.getHomeLat(), customer.getHomeLon(), m.getLat(), m.getLon()));
+
+            List<Merchant> sorted = reference.merchants().stream().sorted(byDistance).toList();
+            List<Merchant> local = sorted.stream()
+                    .filter(m -> Geo.distanceKm(customer.getHomeLat(), customer.getHomeLon(),
+                            m.getLat(), m.getLon()) <= LOCAL_RADIUS_KM)
+                    .toList();
+            return local.size() >= 3 ? local : sorted.subList(0, 3);
+        });
     }
 
     private void emit(String cardId, Merchant merchant, long amountMinor, Instant eventTime) {
