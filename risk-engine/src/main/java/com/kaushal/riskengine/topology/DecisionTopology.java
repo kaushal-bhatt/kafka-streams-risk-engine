@@ -5,6 +5,7 @@ import com.kaushal.riskengine.avro.Decision;
 import com.kaushal.riskengine.avro.EnrichedTransaction;
 import com.kaushal.riskengine.config.AvroSerdes;
 import com.kaushal.riskengine.decision.RiskEvaluatorSupplier;
+import com.kaushal.riskengine.decision.RiskPolicy;
 import io.confluent.kafka.streams.serdes.avro.SpecificAvroSerde;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.common.serialization.Serdes;
@@ -35,17 +36,23 @@ public class DecisionTopology {
     private final AvroSerdes avroSerdes;
     private final MeterRegistry meterRegistry;
     private final boolean inMemoryStores;
+    private final RiskPolicy policy;
 
     @Autowired
     public DecisionTopology(AvroSerdes avroSerdes, MeterRegistry meterRegistry) {
-        this(avroSerdes, meterRegistry, false);
+        this(avroSerdes, meterRegistry, false, RiskPolicy.DEFAULT);
     }
 
-    /** {@code inMemoryStores} is for the offline evaluation only; see RiskEvaluatorSupplier. */
-    public DecisionTopology(AvroSerdes avroSerdes, MeterRegistry meterRegistry, boolean inMemoryStores) {
+    /**
+     * For the offline evaluation: in-memory stores (see RiskEvaluatorSupplier), and a policy
+     * other than the default, so variants can be compared without editing code.
+     */
+    public DecisionTopology(AvroSerdes avroSerdes, MeterRegistry meterRegistry, boolean inMemoryStores,
+                            RiskPolicy policy) {
         this.avroSerdes = avroSerdes;
         this.meterRegistry = meterRegistry;
         this.inMemoryStores = inMemoryStores;
+        this.policy = policy;
     }
 
     @Bean
@@ -53,7 +60,7 @@ public class DecisionTopology {
         SpecificAvroSerde<Decision> decisionSerde = avroSerdes.value();
 
         KStream<String, Decision> decisions = enrichmentStream.process(
-                new RiskEvaluatorSupplier(avroSerdes, meterRegistry, inMemoryStores),
+                new RiskEvaluatorSupplier(avroSerdes, meterRegistry, inMemoryStores, policy),
                 Named.as("risk-evaluator"));
 
         decisions.to(Topics.DECISIONS, Produced.with(Serdes.String(), decisionSerde).withName("decisions-sink"));

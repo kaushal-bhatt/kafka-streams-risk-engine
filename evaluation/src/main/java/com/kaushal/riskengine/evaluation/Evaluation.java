@@ -1,6 +1,7 @@
 package com.kaushal.riskengine.evaluation;
 
 import com.kaushal.riskengine.avro.Decision;
+import com.kaushal.riskengine.decision.RiskPolicy;
 import com.kaushal.trafficgen.SparkovMapping;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
@@ -30,7 +31,7 @@ import java.util.function.Consumer;
 public final class Evaluation {
 
     public record Result(Map<String, Scorecard> byFile, Scorecard overall, long rows, Duration elapsed,
-                         int cards, int merchants) {
+                         int cards, int merchants, RiskPolicy policy) {
     }
 
     private static final int PROGRESS_EVERY = 25_000;
@@ -38,16 +39,18 @@ public final class Evaluation {
     private final long seed;
     private final long limit;
     private final Consumer<String> progress;
+    private final RiskPolicy policy;
 
-    public Evaluation(long seed, long limit, Consumer<String> progress) {
+    public Evaluation(long seed, long limit, Consumer<String> progress, RiskPolicy policy) {
         this.seed = seed;
         this.limit = limit;
         this.progress = progress;
+        this.policy = policy;
     }
 
     public Result run(List<Path> files, Path stateDir) throws IOException {
         long started = System.nanoTime();
-        try (OfflineEngine engine = new OfflineEngine(stateDir)) {
+        try (OfflineEngine engine = new OfflineEngine(stateDir, policy)) {
             int[] reference = seedReferenceData(engine, files);
 
             Map<String, Scorecard> byFile = new LinkedHashMap<>();
@@ -79,7 +82,7 @@ public final class Evaluation {
                 }
             }
             return new Result(byFile, overall, rows, Duration.ofNanos(System.nanoTime() - started),
-                    reference[0], reference[1]);
+                    reference[0], reference[1], policy);
         }
     }
 

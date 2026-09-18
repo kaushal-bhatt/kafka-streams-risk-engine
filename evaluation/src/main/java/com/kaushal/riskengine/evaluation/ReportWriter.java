@@ -35,8 +35,9 @@ final class ReportWriter {
                 + "gives the same numbers.\n");
         md.append("- **Labels:** each transaction's `is_fraud` travels through the pipeline in `labelledFraud` and comes "
                 + "back on the engine's `Decision`. What's scored is what the engine emitted.\n");
-        md.append("- **Thresholds:** exactly as in `RiskRules`. Chosen for the scripted demo scenarios and not tuned on "
-                + "this data.\n");
+        md.append("- **Thresholds:** as in `RiskRules`, with policy `%s` (`RiskPolicy`). See the README for how the "
+                .formatted(result.policy())
+                + "policy was chosen: on `fraudTrain` only.\n");
         md.append("- **Run time:** %s for %s transactions (%s/s).\n\n"
                 .formatted(duration(result.elapsed().toSeconds()), n(result.rows()),
                         n(Math.round(result.rows() / Math.max(1e-9, result.elapsed().toNanos() / 1e9)))));
@@ -99,8 +100,8 @@ final class ReportWriter {
                 2.00 card-testing ceiling apply to the number as given.
                 - **Sparkov scatters merchant locations** up to roughly 100 km around each transaction, so \
                 `GEO_VELOCITY`'s false positives here partly measure that scatter.
-                - **Thresholds were not tuned on this data.** If they are, tune on `fraudTrain` and report `fraudTest` \
-                only, or the headline number is fitted to its own test set.
+                - **Only `fraudTest` numbers are unbiased** for any policy chosen by evaluating on `fraudTrain`. The \
+                `fraudTrain` rows describe the data the choice was made on.
                 """);
         return md.toString();
     }

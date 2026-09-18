@@ -1,5 +1,6 @@
 package com.kaushal.riskengine.evaluation;
 
+import com.kaushal.riskengine.decision.RiskPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -45,7 +46,7 @@ class EvaluationFixtureTest {
         Files.write(csv, rows, StandardCharsets.UTF_8);
 
         Path state = Files.createDirectory(dir.resolve("state"));
-        Evaluation.Result result = new Evaluation(42, 0, line -> { }).run(List.of(csv), state);
+        Evaluation.Result result = new Evaluation(42, 0, line -> { }, RiskPolicy.DEFAULT).run(List.of(csv), state);
         Scorecard s = result.overall();
 
         assertThat(result.rows()).isEqualTo(6);

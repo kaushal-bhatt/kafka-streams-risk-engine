@@ -36,9 +36,10 @@ public class RiskEvaluatorSupplier implements ProcessorSupplier<String, Enriched
     private final AvroSerdes avroSerdes;
     private final MeterRegistry meterRegistry;
     private final boolean inMemoryStores;
+    private final RiskPolicy policy;
 
     public RiskEvaluatorSupplier(AvroSerdes avroSerdes, MeterRegistry meterRegistry) {
-        this(avroSerdes, meterRegistry, false);
+        this(avroSerdes, meterRegistry, false, RiskPolicy.DEFAULT);
     }
 
     /**
@@ -47,15 +48,17 @@ public class RiskEvaluatorSupplier implements ProcessorSupplier<String, Enriched
      *                       TopologyTestDriver: that commits after every record, and each
      *                       commit flushes RocksDB to disk - a disk flush per transaction.
      */
-    public RiskEvaluatorSupplier(AvroSerdes avroSerdes, MeterRegistry meterRegistry, boolean inMemoryStores) {
+    public RiskEvaluatorSupplier(AvroSerdes avroSerdes, MeterRegistry meterRegistry, boolean inMemoryStores,
+                                 RiskPolicy policy) {
         this.avroSerdes = avroSerdes;
         this.meterRegistry = meterRegistry;
         this.inMemoryStores = inMemoryStores;
+        this.policy = policy;
     }
 
     @Override
     public Processor<String, EnrichedTransaction, String, Decision> get() {
-        return new RiskEvaluator(meterRegistry);
+        return new RiskEvaluator(meterRegistry, policy);
     }
 
     @Override

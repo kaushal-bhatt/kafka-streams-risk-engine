@@ -1,5 +1,7 @@
 package com.kaushal.riskengine.evaluation;
 
+import com.kaushal.riskengine.avro.DecisionType;
+import com.kaushal.riskengine.decision.RiskPolicy;
 import com.kaushal.trafficgen.SparkovMapping;
 
 import java.io.IOException;
@@ -20,6 +22,9 @@ import java.util.stream.Stream;
  *   ./gradlew :evaluation:run
  *   ./gradlew :evaluation:run --args="--limit=100000"
  *   ./gradlew :evaluation:run --args="--data-dir=data --out=docs/EVALUATION.md"
+ *
+ *   Tuning - fraudTrain only, never the test file, with a policy variant:
+ *   ./gradlew :evaluation:run --args="--files=fraudTrain --geo-certain-km=500 --geo-short-hop-score=45 --out=build/tune.md"
  * </pre>
  */
 public final class Evaluate {
@@ -33,17 +38,28 @@ public final class Evaluate {
         Path out = Path.of(flags.getOrDefault("out", "docs/EVALUATION.md"));
         long limit = Long.parseLong(flags.getOrDefault("limit", "0"));
         long seed = Long.parseLong(flags.getOrDefault("seed", "42"));
+        RiskPolicy policy = new RiskPolicy(
+                Double.parseDouble(flags.getOrDefault("geo-certain-km", String.valueOf(RiskPolicy.DEFAULT.geoCertainDistanceKm()))),
+                Integer.parseInt(flags.getOrDefault("geo-short-hop-score", String.valueOf(RiskPolicy.DEFAULT.geoShortHopScore()))));
 
-        List<Path> files = SparkovMapping.locateCsvs(dataDir);
+        // --files=fraudTrain restricts the run to one file. Tuning uses exactly that, so the
+        // test file is never read while a threshold is being chosen.
+        String only = flags.getOrDefault("files", "all");
+        List<Path> files = SparkovMapping.locateCsvs(dataDir).stream()
+                .filter(f -> only.equals("all") || Evaluation.label(f).equalsIgnoreCase(only))
+                .toList();
+        if (files.isEmpty()) {
+            throw new IllegalArgumentException("--files=" + only + " matched nothing in " + dataDir.toAbsolutePath());
+        }
         System.out.println("evaluating " + files.stream().map(Evaluation::label).collect(Collectors.joining(", "))
-                + (limit > 0 ? " (first %,d transactions)".formatted(limit) : ""));
+                + (limit > 0 ? " (first %,d transactions)".formatted(limit) : "") + " with " + policy);
 
         // Under build/ rather than the OS temp folder, which Kafka Streams warns about because
         // the OS may clear it mid-run. Deleted again at the end either way.
         Path buildDir = Files.createDirectories(Path.of("build"));
         Path stateDir = Files.createTempDirectory(buildDir, "evaluation-state-");
         try {
-            Evaluation.Result result = new Evaluation(seed, limit, System.out::println).run(files, stateDir);
+            Evaluation.Result result = new Evaluation(seed, limit, System.out::println, policy).run(files, stateDir);
 
             String source = "[Sparkov credit card transactions](https://www.kaggle.com/datasets/kartik2112/fraud-detection) ("
                     + files.stream().map(f -> "`" + f.getFileName() + "`").collect(Collectors.joining(", ")) + ")";
@@ -68,6 +84,8 @@ public final class Evaluate {
                 ReportWriter.pct(all.flagged().precision()), ReportWriter.pct(all.flagged().recall()),
                 ReportWriter.pct(all.flagged().falsePositiveRate()));
         System.out.printf("cards:     %d of %d fraud-hit cards caught%n", all.fraudCardsCaught(), all.fraudCards());
+        System.out.printf("review:    %,d transactions sent to REVIEW%n",
+                all.byDecision().getOrDefault(DecisionType.REVIEW, 0L));
     }
 
     private static Map<String, String> parse(String[] args) {

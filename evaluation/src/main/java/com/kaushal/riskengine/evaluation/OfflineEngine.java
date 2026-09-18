@@ -8,6 +8,7 @@ import com.kaushal.riskengine.avro.Merchant;
 import com.kaushal.riskengine.avro.Transaction;
 import com.kaushal.riskengine.config.AvroSerdes;
 import com.kaushal.riskengine.config.RiskEngineProperties;
+import com.kaushal.riskengine.decision.RiskPolicy;
 import com.kaushal.riskengine.topology.DecisionTopology;
 import com.kaushal.riskengine.topology.EnrichmentTopology;
 import io.confluent.kafka.schemaregistry.testutil.MockSchemaRegistry;
@@ -64,7 +65,7 @@ final class OfflineEngine implements AutoCloseable {
     private final Map<String, TestOutputTopic<byte[], byte[]>> drains = new HashMap<>();
     private int sinceDrain;
 
-    OfflineEngine(Path stateDir) {
+    OfflineEngine(Path stateDir, RiskPolicy policy) {
         AvroSerdes serdes = new AvroSerdes(new RiskEngineProperties(
                 "offline-evaluation", "offline:9092", "mock://" + SCOPE, stateDir.toString(),
                 "offline:0", 0, "at_least_once"));
@@ -84,7 +85,7 @@ final class OfflineEngine implements AutoCloseable {
 
         // The config has to reach the builder, or DSL stores are chosen before it's read.
         StreamsBuilder builder = new StreamsBuilder(new TopologyConfig(new StreamsConfig(config)));
-        new DecisionTopology(serdes, new SimpleMeterRegistry(), true)
+        new DecisionTopology(serdes, new SimpleMeterRegistry(), true, policy)
                 .decisionStream(new EnrichmentTopology(serdes).enrichmentStream(builder));
 
         driver = new TopologyTestDriver(builder.build(), config);

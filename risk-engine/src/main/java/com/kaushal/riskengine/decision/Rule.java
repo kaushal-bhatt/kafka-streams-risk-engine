@@ -21,8 +21,13 @@ public enum Rule {
     /** This transaction would take the card past its daily limit. */
     DAILY_LIMIT(80),
 
-    /** Implied travel speed since the card's last location is faster than a plane. */
+    /** Implied travel speed since the card's last location is faster than a plane, over a
+        distance no location noise could explain. */
     GEO_VELOCITY(80),
+
+    /** The same impossible speed, but over a shorter distance, where merchant-location and GPS
+        noise are plausible explanations. Scored by {@link RiskPolicy#geoShortHopScore()}. */
+    GEO_SHORT_HOP(0),
 
     /** Merchant category where fraud concentrates (gambling, quasi-cash, card-not-present). */
     MERCHANT_RISK(20),
@@ -48,9 +53,14 @@ public enum Rule {
     }
 
     public RuleHit hit(String detail) {
+        return hit(detail, score);
+    }
+
+    /** For rules whose score comes from the {@link RiskPolicy} rather than this enum. */
+    public RuleHit hit(String detail, int policyScore) {
         return RuleHit.newBuilder()
                 .setRule(name())
-                .setScore(score)
+                .setScore(policyScore)
                 .setDetail(detail)
                 .build();
     }

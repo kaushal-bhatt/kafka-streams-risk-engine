@@ -73,14 +73,16 @@ public class RiskEvaluator implements Processor<String, EnrichedTransaction, Str
     private static final long DAY_MILLIS = Duration.ofDays(1).toMillis();
 
     private final MeterRegistry meterRegistry;
+    private final RiskPolicy policy;
 
     private ProcessorContext<String, Decision> context;
     private WindowStore<String, VelocityEntry> velocityStore;
     private KeyValueStore<String, DailySpend> spendStore;
     private KeyValueStore<String, LastSeen> geoStore;
 
-    public RiskEvaluator(MeterRegistry meterRegistry) {
+    public RiskEvaluator(MeterRegistry meterRegistry, RiskPolicy policy) {
         this.meterRegistry = meterRegistry;
+        this.policy = policy;
     }
 
     @Override
@@ -236,8 +238,8 @@ public class RiskEvaluator implements Processor<String, EnrichedTransaction, Str
         }
     }
 
-    private static void checkImpossibleTravel(LastSeen last, Transaction txn, Merchant merchant,
-                                              long eventTime, List<RuleHit> hits) {
+    private void checkImpossibleTravel(LastSeen last, Transaction txn, Merchant merchant,
+                                       long eventTime, List<RuleHit> hits) {
         if (last == null) {
             return;
         }
@@ -251,8 +253,17 @@ public class RiskEvaluator implements Processor<String, EnrichedTransaction, Str
         if (kmh > RiskRules.GEO_MAX_KMH) {
             String from = last.getPlace() != null ? last.getPlace() : "last location";
             String to = merchant != null ? merchant.getCountry() : "here";
-            hits.add(Rule.GEO_VELOCITY.hit("%.0f km from %s to %s in %s implies %.0f km/h".formatted(
-                    km, from, to, human(Duration.ofMillis(elapsed)), kmh)));
+            String detail = "%.0f km from %s to %s in %s implies %.0f km/h".formatted(
+                    km, from, to, human(Duration.ofMillis(elapsed)), kmh);
+            // The same impossible speed means different things at different distances: across
+            // a continent it can only be two people; across a region it may be a merchant
+            // registered 150 km from where the card was really used. The evaluation found the
+            // regional case made up most of this rule's false declines.
+            if (km >= policy.geoCertainDistanceKm()) {
+                hits.add(Rule.GEO_VELOCITY.hit(detail));
+            } else {
+                hits.add(Rule.GEO_SHORT_HOP.hit(detail, policy.geoShortHopScore()));
+            }
         }
     }
 

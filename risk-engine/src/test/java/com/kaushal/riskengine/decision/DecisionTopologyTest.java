@@ -60,6 +60,7 @@ class DecisionTopologyTest {
     private static final Merchant BERLIN_3 = merchant("M-BERLIN-3", "DE", 52.5100, 13.3900, "5999");
     private static final Merchant CASINO = merchant("M-CASINO", "DE", 52.5050, 13.3800, "7995");
     private static final Merchant SAO_PAULO = merchant("M-SAOPAULO", "BR", -23.5505, -46.6333, "5411");
+    private static final Merchant HAMBURG = merchant("M-HAMBURG", "DE", 53.5511, 9.9937, "5411");
 
     @TempDir
     Path stateDir;
@@ -71,12 +72,23 @@ class DecisionTopologyTest {
 
     @BeforeEach
     void setUp() {
+        start(RiskPolicy.DEFAULT);
+    }
+
+    /** Closes the running topology and starts a fresh one under a different policy. */
+    private void restartWith(RiskPolicy policy) {
+        tearDown();
+        start(policy);
+    }
+
+    private void start(RiskPolicy policy) {
         AvroSerdes serdes = new AvroSerdes(new RiskEngineProperties(
                 "decision-test", "dummy:9092", "mock://" + SCOPE, stateDir.toString(),
                 "localhost:8088", 0, "at_least_once"));
 
         StreamsBuilder builder = new StreamsBuilder();
-        new DecisionTopology(serdes, meters).decisionStream(new EnrichmentTopology(serdes).enrichmentStream(builder));
+        new DecisionTopology(serdes, meters, false, policy)
+                .decisionStream(new EnrichmentTopology(serdes).enrichmentStream(builder));
 
         Properties config = new Properties();
         config.put(StreamsConfig.APPLICATION_ID_CONFIG, "decision-test-" + UUID.randomUUID());
@@ -97,7 +109,7 @@ class DecisionTopologyTest {
         cards.pipeInput("CARD-1", card("CARD-1", "CUST-LOW", CardStatus.ACTIVE));
         cards.pipeInput("CARD-HIGH", card("CARD-HIGH", "CUST-HIGH", CardStatus.ACTIVE));
         cards.pipeInput("CARD-BLOCKED", card("CARD-BLOCKED", "CUST-LOW", CardStatus.BLOCKED));
-        for (Merchant m : List.of(BERLIN, BERLIN_2, BERLIN_3, CASINO, SAO_PAULO)) {
+        for (Merchant m : List.of(BERLIN, BERLIN_2, BERLIN_3, CASINO, SAO_PAULO, HAMBURG)) {
             merchants.pipeInput(m.getMerchantId(), m);
         }
     }
@@ -106,6 +118,7 @@ class DecisionTopologyTest {
     void tearDown() {
         if (driver != null) {
             driver.close();
+            driver = null;
         }
         MockSchemaRegistry.dropScope(SCOPE);
     }
@@ -267,6 +280,44 @@ class DecisionTopologyTest {
             Decision nextDoor = send("CARD-1", BERLIN_2, 1_000, T0.plusSeconds(10));
 
             assertThat(nextDoor.getReasons()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("distance-scaled policy: a short impossible hop is sent to REVIEW, not declined")
+        void shortHopIsReviewedUnderDistancePolicy() {
+            restartWith(new RiskPolicy(500, 45));
+            send("CARD-1", BERLIN, 1_000, T0);
+
+            // Berlin to Hamburg: ~255 km in 5 minutes is impossible, but within the range
+            // where a mis-registered merchant location is a plausible explanation.
+            Decision hop = send("CARD-1", HAMBURG, 1_000, T0.plus(Duration.ofMinutes(5)));
+
+            assertThat(hop.getDecision()).isEqualTo(DecisionType.REVIEW);
+            assertThat(rules(hop)).containsExactly("GEO_SHORT_HOP");
+        }
+
+        @Test
+        @DisplayName("distance-scaled policy: a continental jump is still certain, and still declined")
+        void longJumpStillDeclinedUnderDistancePolicy() {
+            restartWith(new RiskPolicy(500, 45));
+            send("CARD-1", BERLIN, 1_000, T0);
+
+            Decision jump = send("CARD-1", SAO_PAULO, 1_000, T0.plus(Duration.ofMinutes(4)));
+
+            assertThat(jump.getDecision()).isEqualTo(DecisionType.DECLINE);
+            assertThat(rules(jump)).containsExactly("GEO_VELOCITY");
+        }
+
+        @Test
+        @DisplayName("the original policy still declines the short hop - the baseline is reproducible")
+        void originalPolicyDeclinesShortHop() {
+            restartWith(RiskPolicy.ORIGINAL);
+            send("CARD-1", BERLIN, 1_000, T0);
+
+            Decision hop = send("CARD-1", HAMBURG, 1_000, T0.plus(Duration.ofMinutes(5)));
+
+            assertThat(hop.getDecision()).isEqualTo(DecisionType.DECLINE);
+            assertThat(rules(hop)).containsExactly("GEO_VELOCITY");
         }
 
         @Test
