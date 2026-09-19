@@ -66,6 +66,11 @@
   .btn.ghost{ border:1px solid var(--glass-border); background:var(--glass); }
   .btn:focus-visible{ outline:2px solid #93c5fd; outline-offset:3px; }
 
+  /* --- Demo video --- */
+  .video{ margin:40px 0 0; }
+  .video video{ width:100%; display:block; border-radius:14px; border:1px solid var(--glass-border); background:var(--raised); }
+  .video figcaption{ font-size:.85rem; color:var(--muted); margin-top:10px; }
+
   /* --- Live example --- */
   .demo{ margin-top:48px; background:var(--raised); border:1px solid var(--glass-border); border-radius:16px; padding:24px; }
   .steps{ display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; position:relative; }
@@ -135,6 +140,13 @@
         <a class="btn primary" href="https://github.com/kaushal-bhatt/kafka-streams-risk-engine">View the code on GitHub →</a>
         <a class="btn ghost" href="#results">See the results</a>
       </div>
+
+      <figure class="video">
+        <video id="demo-video" src="demo.mp4" autoplay muted loop playsinline controls preload="auto"
+               aria-label="The live dashboard: payments arriving, a card-testing attack flagged, then impossible travel declined"></video>
+        <figcaption>The real engine running: a card-testing attack goes from approve to review to decline,
+          then a card used in Berlin and São Paulo four minutes apart is declined.</figcaption>
+      </figure>
 
       <div class="demo" aria-label="Example: how one payment is checked">
         <div class="steps">
@@ -246,6 +258,14 @@
   const dots = [...document.querySelectorAll('.dots span')];
   const d = i => document.getElementById('d' + i);
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // The demo autoplays like a looping GIF (muted, so browsers allow it) - unless the visitor
+  // has asked for less motion, in which case it waits for them to press play.
+  const video = document.getElementById('demo-video');
+  if (video && reduce) {
+    video.removeAttribute('autoplay');
+    video.pause();
+  }
 
   function show(ex, upTo) {
     d(0).textContent = upTo >= 0 ? ex.pay : '';
