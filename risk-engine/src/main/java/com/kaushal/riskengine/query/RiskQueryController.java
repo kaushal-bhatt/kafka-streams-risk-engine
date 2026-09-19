@@ -22,9 +22,20 @@ import java.util.Map;
 public class RiskQueryController {
 
     private final CardRiskQueryService queryService;
+    private final MerchantStatsQueryService merchantStats;
 
-    public RiskQueryController(CardRiskQueryService queryService) {
+    public RiskQueryController(CardRiskQueryService queryService, MerchantStatsQueryService merchantStats) {
         this.queryService = queryService;
+        this.merchantStats = merchantStats;
+    }
+
+    /** A merchant's decision counts per 5-minute window: the most recent hour the engine holds. */
+    @GetMapping("/merchants/{merchantId}/stats")
+    public ResponseEntity<MerchantStatsView> merchant(@PathVariable String merchantId,
+                                                      @RequestParam(defaultValue = "false") boolean local) {
+        return merchantStats.find(merchantId, local)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     @GetMapping("/cards/{cardId}")

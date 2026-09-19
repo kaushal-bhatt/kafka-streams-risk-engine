@@ -15,6 +15,8 @@ milliseconds against data the app already holds in memory, with no database look
 - Catches: too many payments too fast, card testing with tiny amounts, daily limit breaches,
   and impossible travel (Berlin, then São Paulo 4 minutes later).
 - Answers "what do we know about this card?" over HTTP, straight from the app's own state.
+- Tracks every shop's decline rate in 5-minute windows. A sudden spike can mean a hacked card
+  machine.
 - Shows every decision live on a dashboard.
 
 ## Results

@@ -11,7 +11,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.kafka.config.StreamsBuilderFactoryBean;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
 import java.time.Clock;
@@ -52,7 +51,7 @@ public class CardRiskQueryService {
 
     private final StreamsBuilderFactoryBean factoryBean;
     private final LocalCardStores localStores;
-    private final RestClient restClient;
+    private final RemoteQueries remote;
     private final HostInfo self;
     private final Clock clock;
 
@@ -67,7 +66,7 @@ public class CardRiskQueryService {
                          RestClient restClient, HostInfo self, Clock clock) {
         this.factoryBean = factoryBean;
         this.localStores = localStores;
-        this.restClient = restClient;
+        this.remote = new RemoteQueries(restClient);
         this.self = self;
         this.clock = clock;
     }
@@ -149,28 +148,7 @@ public class CardRiskQueryService {
     }
 
     private Optional<CardRiskView> forward(HostInfo owner, String cardId, boolean stale) {
-        try {
-            return restClient.get()
-                    .uri("http://{host}:{port}/risk/cards/{cardId}?local=true&stale={stale}",
-                            owner.host(), owner.port(), cardId, stale)
-                    .exchange((request, response) -> {
-                        int status = response.getStatusCode().value();
-                        if (status == 404) {
-                            return Optional.<CardRiskView>empty();
-                        }
-                        if (status == 503) {
-                            throw new StoreNotReadyException("owner " + endpoint(owner) + " is not ready");
-                        }
-                        if (!response.getStatusCode().is2xxSuccessful()) {
-                            throw new IllegalStateException("owner " + endpoint(owner) + " answered " + status);
-                        }
-                        return Optional.ofNullable(response.bodyTo(CardRiskView.class));
-                    });
-        } catch (ResourceAccessException e) {
-            // The owner is down. Kafka will notice and move its partitions once its session
-            // times out; until then the honest answer is "try again shortly".
-            throw new StoreNotReadyException("owner " + endpoint(owner) + " is unreachable", e);
-        }
+        return remote.get(owner, "/risk/cards/{cardId}?local=true&stale={stale}", CardRiskView.class, cardId, stale);
     }
 
     private KafkaStreams streams() {
@@ -193,7 +171,7 @@ public class CardRiskQueryService {
         return host.host() + ":" + host.port();
     }
 
-    private static SimpleClientHttpRequestFactory timeouts() {
+    static SimpleClientHttpRequestFactory timeouts() {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(2_000);
         factory.setReadTimeout(3_000);

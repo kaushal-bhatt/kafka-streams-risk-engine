@@ -147,6 +147,13 @@ protocol RiskModel {
     union { null, string } place = null;
   }
 
+  /** Running decision counts for one merchant in one time window - the value held in the
+      analytics window store while the window is open. */
+  record DecisionCounts {
+    long total = 0;
+    long declined = 0;
+  }
+
   /** Windowed decline rate per merchant, emitted once per closed window. */
   record MerchantStats {
     string merchantId;

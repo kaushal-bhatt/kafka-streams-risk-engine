@@ -33,6 +33,9 @@ public final class Topics {
     /** The latest decision per card, materialised from the decision stream for queries. */
     public static final String LAST_DECISION_STORE = "last-decision-store";
 
+    /** Decision counts per merchant per 5-minute window (stage 4), keyed by merchantId. */
+    public static final String MERCHANT_STATS_STORE = "merchant-stats-store";
+
     /** Queryable via Interactive Queries from stage 3. */
     public static final String CARD_PROFILE_STORE = "card-profile-store";
     public static final String MERCHANT_STORE = "merchant-store";
