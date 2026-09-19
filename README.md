@@ -7,6 +7,12 @@
 A real-time card fraud checker built with **Kafka Streams**. Every payment is checked in
 milliseconds against data the app already holds in memory, with no database lookup.
 
+
+
+https://github.com/user-attachments/assets/e0335b16-c4ae-47ab-b89a-c078853a6191
+
+
+
 **[See how it works →](https://kaushal-bhatt.github.io/kafka-streams-risk-engine/)**
 
 ## What it does
