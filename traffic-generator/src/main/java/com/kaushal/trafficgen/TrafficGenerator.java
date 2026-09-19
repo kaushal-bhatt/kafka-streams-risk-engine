@@ -83,7 +83,7 @@ public final class TrafficGenerator {
                   impossible-travel  Berlin, then Sao Paulo four minutes later
                   limit-breach       walk a card up to and past its daily limit
                   latency            time send -> decision readable, 20/s (--limit=N, default 200)
-                  replay             replay the labelled Sparkov dataset (see docs/DATA.md)
+                  replay             replay the labelled Sparkov dataset (CSVs in data/)
 
                 Flags
                   --bootstrap-servers=localhost:9092

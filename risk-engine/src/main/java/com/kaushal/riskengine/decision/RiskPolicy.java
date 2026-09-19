@@ -23,8 +23,8 @@ public record RiskPolicy(double geoCertainDistanceKm, int geoShortHopScore) {
     public static final RiskPolicy ORIGINAL = new RiskPolicy(RiskRules.GEO_MIN_DISTANCE_KM, 0);
 
     /**
-     * What the engine runs: V1 of the pre-registered tuning in docs/TUNING.md. Impossible travel
-     * over 500 km declines; shorter impossible hops go to REVIEW. Chosen on fraudTrain only.
+     * What the engine runs. Impossible travel over 500 km declines; shorter impossible hops go
+     * to REVIEW. Chosen by a pre-registered tuning on fraudTrain, judged on fraudTest.
      */
     public static final RiskPolicy DEFAULT = new RiskPolicy(500, 45);
 

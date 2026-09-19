@@ -60,7 +60,7 @@ public class Scenarios {
         // A card profile is built by a foreign-key join that makes a round trip through two
         // internal topics. Sub-second with caching disabled on the reference stores, but a
         // transaction sent in the same instant can still beat it. A short pause keeps the
-        // demo deterministic. See docs/NOTES.md.
+        // demo deterministic.
         Thread.sleep(REFERENCE_SETTLE_MILLIS);
     }
 

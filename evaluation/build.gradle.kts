@@ -50,7 +50,7 @@ application {
     applicationDefaultJvmArgs = listOf("-Xmx2g")
 }
 
-// ./gradlew :evaluation:run   (reads data/, writes docs/EVALUATION.md)
+// ./gradlew :evaluation:run   (reads data/, writes build/evaluation-report.md)
 tasks.named<JavaExec>("run") {
     workingDir = rootProject.projectDir
 }

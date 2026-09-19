@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafka Streams Risk Engine: catching card fraud in real time</title>
+<meta name="description" content="A real-time card fraud checker built with Kafka Streams. Every payment is checked in milliseconds, tested on 1.85 million labelled payments.">
+<meta property="og:title" content="Kafka Streams Risk Engine">
+<meta property="og:description" content="Every card payment checked in milliseconds. Tested on 1.85 million labelled payments: 89% of fraud-hit cards caught.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://kaushal-bhatt.github.io/kafka-streams-risk-engine/">
+<meta name="theme-color" content="hsl(222.2 84% 4.9%)">
+<link rel="canonical" href="https://kaushal-bhatt.github.io/kafka-streams-risk-engine/">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --background: hsl(222.2 84% 4.9%);
+    --raised: hsl(222.2 70% 7%);
+    --foreground: hsl(210 40% 98%);
+    --muted: hsl(215 20.2% 65.1%);
+    --border: hsl(217.2 32.6% 17.5%);
+    --glass: rgba(255,255,255,0.05);
+    --glass-border: rgba(255,255,255,0.10);
+    --blue: #60a5fa;
+    --purple: #a855f7;
+    --blue-dark: #2563eb;
+    --gradient: linear-gradient(90deg, var(--blue), var(--purple), var(--blue-dark));
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  }
+  *, *::before, *::after{ box-sizing:border-box; }
+  html{ scroll-behavior:smooth; }
+  body{
+    margin:0; background:var(--background); color:var(--foreground);
+    font-family:var(--font); font-size:17px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  a{ color:inherit; }
+  .wrap{ max-width:1040px; margin:0 auto; padding:0 24px; }
+  section{ padding:72px 0; border-top:1px solid var(--border); }
+  h1,h2,h3{ line-height:1.15; margin:0 0 .5em; letter-spacing:-0.02em; }
+  h2{ font-size:clamp(1.6rem, 3vw, 2.1rem); }
+  h3{ font-size:1.1rem; }
+  p{ margin:0 0 1em; }
+  .muted{ color:var(--muted); }
+  .eyebrow{ font-size:.8rem; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:var(--blue); margin-bottom:.8em; }
+  .gradient-text{ background:var(--gradient); -webkit-background-clip:text; background-clip:text; color:transparent; }
+
+  /* --- Hero --- */
+  .hero{ padding:96px 0 64px; border-top:0; position:relative; }
+  .hero::before{
+    content:""; position:absolute; inset:-200px 0 auto 0; height:520px; z-index:-1;
+    background:radial-gradient(600px 300px at 50% 0%, rgba(96,165,250,.18), transparent 70%),
+               radial-gradient(500px 260px at 80% 20%, rgba(168,85,247,.14), transparent 70%);
+  }
+  .hero h1{ font-size:clamp(2.2rem, 5.5vw, 3.6rem); font-weight:800; max-width:15ch; }
+  .hero .lead{ font-size:1.2rem; color:var(--muted); max-width:52ch; }
+  .buttons{ display:flex; gap:12px; flex-wrap:wrap; margin-top:28px; }
+  .btn{ display:inline-flex; align-items:center; gap:8px; padding:12px 20px; border-radius:10px; font-weight:600; text-decoration:none; font-size:.95rem; }
+  .btn.primary{ background:var(--gradient); color:#fff; }
+  .btn.ghost{ border:1px solid var(--glass-border); background:var(--glass); }
+  .btn:focus-visible{ outline:2px solid #93c5fd; outline-offset:3px; }
+
+  /* --- Live example --- */
+  .demo{ margin-top:48px; background:var(--raised); border:1px solid var(--glass-border); border-radius:16px; padding:24px; }
+  .steps{ display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; position:relative; }
+  .step{ border:1px solid var(--border); border-radius:12px; padding:14px; background:var(--glass); transition:border-color .3s, background .3s, transform .3s; }
+  .step .n{ font-family:var(--mono); font-size:.75rem; color:var(--muted); }
+  .step .t{ font-weight:600; font-size:.95rem; margin-top:2px; }
+  .step .d{ font-size:.85rem; color:var(--muted); margin-top:6px; min-height:2.6em; }
+  .step.on{ border-color:var(--blue); background:rgba(96,165,250,.10); transform:translateY(-2px); }
+  .verdict{ display:inline-block; font-weight:700; font-size:.8rem; letter-spacing:.05em; padding:3px 10px; border-radius:999px; margin-top:6px; }
+  .verdict.APPROVE{ color:var(--ok); background:rgba(52,211,153,.12); }
+  .verdict.REVIEW{ color:var(--warn); background:rgba(251,191,36,.12); }
+  .verdict.DECLINE{ color:var(--bad); background:rgba(248,113,113,.12); }
+  .demo-foot{ display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:16px; font-size:.85rem; color:var(--muted); }
+  .dots{ display:flex; gap:6px; }
+  .dots span{ width:8px; height:8px; border-radius:50%; background:var(--border); }
+  .dots span.on{ background:var(--blue); }
+
+  /* --- Cards --- */
+  .grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:16px; margin-top:28px; }
+  .card{ border:1px solid var(--glass-border); background:var(--glass); border-radius:14px; padding:20px; }
+  .card .icon{ font-size:1.6rem; margin-bottom:8px; }
+  .card p{ color:var(--muted); font-size:.95rem; margin:0; }
+
+  /* --- Compare --- */
+  .compare{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:28px; }
+  .lane{ border:1px solid var(--glass-border); border-radius:14px; padding:20px; background:var(--glass); }
+  .lane.good{ border-color:rgba(96,165,250,.45); }
+  .flow{ display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-family:var(--mono); font-size:.85rem; margin:12px 0; }
+  .flow span{ padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:var(--raised); }
+  .flow .slow{ border-color:rgba(248,113,113,.5); color:var(--bad); }
+  .flow .fast{ border-color:rgba(52,211,153,.5); color:var(--ok); }
+
+  /* --- Numbers --- */
+  .stats{ display:grid; grid-template-columns:repeat(4, 1fr); gap:16px; margin-top:28px; }
+  .stat{ border:1px solid var(--glass-border); border-radius:14px; padding:22px; background:var(--glass); }
+  .stat .v{ font-size:clamp(2rem, 4vw, 2.6rem); font-weight:800; line-height:1; }
+  .stat .l{ color:var(--muted); font-size:.9rem; margin-top:8px; }
+  .note{ font-size:.85rem; color:var(--muted); margin-top:16px; }
+
+  .chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:20px; }
+  .chip{ font-size:.85rem; padding:6px 12px; border-radius:999px; border:1px solid var(--glass-border); background:var(--glass); }
+
+  footer{ border-top:1px solid var(--border); padding:40px 0 56px; color:var(--muted); font-size:.9rem; }
+  footer a{ color:var(--foreground); }
+
+  @media (max-width: 820px){
+    .steps{ grid-template-columns:1fr 1fr; }
+    .stats{ grid-template-columns:1fr 1fr; }
+    .compare{ grid-template-columns:1fr; }
+    section{ padding:56px 0; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    *{ transition:none !important; scroll-behavior:auto !important; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <section class="hero">
+    <div class="wrap">
+      <div class="eyebrow">Kafka Streams · Real-time</div>
+      <h1>Catching card fraud <span class="gradient-text">as it happens</span></h1>
+      <p class="lead">Every card payment is checked in milliseconds and gets one answer:
+        approve, review or decline, always with the reason why.</p>
+      <div class="buttons">
+        <a class="btn primary" href="https://github.com/kaushal-bhatt/kafka-streams-risk-engine">View the code on GitHub →</a>
+        <a class="btn ghost" href="#results">See the results</a>
+      </div>
+
+      <div class="demo" aria-label="Example: how one payment is checked">
+        <div class="steps">
+          <div class="step" data-step="0"><div class="n">1</div><div class="t">Payment arrives</div><div class="d" id="d0"></div></div>
+          <div class="step" data-step="1"><div class="n">2</div><div class="t">Card &amp; shop details added</div><div class="d" id="d1"></div></div>
+          <div class="step" data-step="2"><div class="n">3</div><div class="t">Fraud rules check it</div><div class="d" id="d2"></div></div>
+          <div class="step" data-step="3"><div class="n">4</div><div class="t">Decision</div><div class="d" id="d3" aria-live="polite"></div></div>
+        </div>
+        <div class="demo-foot">
+          <span>Four example payments, as the engine sees them</span>
+          <span class="dots" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="eyebrow">What it catches</div>
+      <h2>Four kinds of fraud, in plain words</h2>
+      <div class="grid">
+        <div class="card"><div class="icon">⚡</div><h3>Too fast</h3><p>More than 5 payments on one card within a minute. People don't shop that fast; bots do.</p></div>
+        <div class="card"><div class="icon">🔍</div><h3>Card testing</h3><p>Several tiny payments at different shops. Criminals check whether a stolen card works before using it.</p></div>
+        <div class="card"><div class="icon">💳</div><h3>Over the limit</h3><p>A payment that would push the card past its daily spending limit.</p></div>
+        <div class="card"><div class="icon">✈️</div><h3>Impossible travel</h3><p>Used in Berlin, then in São Paulo four minutes later. No one travels that fast.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="eyebrow">Why Kafka Streams</div>
+      <h2>The answer is already waiting</h2>
+      <p class="muted" style="max-width:60ch">Most systems look things up in a database for every payment. That's slow, and if the
+        database struggles, fraud checks stop. This engine keeps what it needs in memory, updated
+        as each payment flows in, so the answer is ready before the question is asked.</p>
+      <div class="compare">
+        <div class="lane">
+          <h3>The usual way</h3>
+          <div class="flow"><span>payment</span>→<span class="slow">database lookup</span>→<span>answer</span></div>
+          <p class="muted" style="margin:0;font-size:.95rem">A heavy query on every payment, and the database is a single point of failure.</p>
+        </div>
+        <div class="lane good">
+          <h3>This project</h3>
+          <div class="flow"><span>payment</span>→<span class="fast">memory, already up to date</span>→<span>answer</span></div>
+          <p class="muted" style="margin:0;font-size:.95rem">A local read. The state can be rebuilt from Kafka at any time.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="results">
+    <div class="wrap">
+      <div class="eyebrow">Results</div>
+      <h2>Tested on 1.85 million payments</h2>
+      <p class="muted" style="max-width:60ch">A public dataset of simulated card payments, each labelled fraud or not. The same code
+        that runs live was used to score all of them.</p>
+      <div class="stats">
+        <div class="stat"><div class="v gradient-text">1.85M</div><div class="l">payments checked</div></div>
+        <div class="stat"><div class="v gradient-text">89%</div><div class="l">of cards hit by fraud were caught</div></div>
+        <div class="stat"><div class="v gradient-text">54%</div><div class="l">of the fraud money was stopped</div></div>
+        <div class="stat"><div class="v gradient-text">64%</div><div class="l">fewer good customers wrongly blocked after tuning</div></div>
+      </div>
+      <p class="note">The tuning was chosen on one part of the data and measured on another part it had never seen,
+        so the 64% isn't just the rules memorising the answers.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="eyebrow">Reliability</div>
+      <h2>Built to keep working</h2>
+      <div class="grid">
+        <div class="card"><div class="icon">🎯</div><h3>Counted exactly once</h3><p>A crash never counts a payment twice or loses one.</p></div>
+        <div class="card"><div class="icon">🔁</div><h3>Survives a server dying</h3><p>A backup copy answers in under half a second while the system recovers.</p></div>
+        <div class="card"><div class="icon">🗂️</div><h3>Nothing thrown away</h3><p>A broken message is set aside with the reason, never silently dropped.</p></div>
+        <div class="card"><div class="icon">✅</div><h3>45 automated tests</h3><p>All of them run on every change, before it goes live.</p></div>
+      </div>
+      <div class="chips">
+        <span class="chip">Java 21</span><span class="chip">Spring Boot 3</span><span class="chip">Kafka Streams</span>
+        <span class="chip">Apache Kafka (KRaft)</span><span class="chip">Avro &amp; Schema Registry</span><span class="chip">Docker</span>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    Built by <a href="https://github.com/kaushal-bhatt">Kaushal Bhatt</a> ·
+    <a href="https://github.com/kaushal-bhatt/kafka-streams-risk-engine">Source on GitHub</a>
+  </div>
+</footer>
+
+<script>
+(() => {
+  // Four real behaviours of the engine, shown one after another.
+  const examples = [
+    { pay: "€34.50 at a Berlin grocery", info: "Card: active, limit €500. Shop: grocery, Berlin.",
+      rule: "Nothing unusual.", verdict: "APPROVE", why: "Looks normal." },
+    { pay: "€89.00 in São Paulo", info: "Same card was used in Berlin 4 minutes ago.",
+      rule: "10,252 km in 4 minutes is impossible.", verdict: "DECLINE", why: "Impossible travel." },
+    { pay: "€1.10 at a kiosk", info: "4th tiny payment in minutes, 3 different shops.",
+      rule: "Matches the card-testing pattern.", verdict: "REVIEW", why: "Sent to a person to check." },
+    { pay: "€570.00 at an electronics shop", info: "Already spent €2,080 of a €2,600 daily limit.",
+      rule: "This payment would pass the limit.", verdict: "DECLINE", why: "Over the daily limit." }
+  ];
+  const steps = [...document.querySelectorAll('.step')];
+  const dots = [...document.querySelectorAll('.dots span')];
+  const d = i => document.getElementById('d' + i);
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function show(ex, upTo) {
+    d(0).textContent = upTo >= 0 ? ex.pay : '';
+    d(1).textContent = upTo >= 1 ? ex.info : '';
+    d(2).textContent = upTo >= 2 ? ex.rule : '';
+    const out = d(3);
+    out.textContent = '';
+    if (upTo >= 3) {
+      const pill = document.createElement('span');
+      pill.className = 'verdict ' + ex.verdict;
+      pill.textContent = ex.verdict;
+      out.append(pill, document.createElement('br'), document.createTextNode(ex.why));
+    }
+    steps.forEach((s, i) => s.classList.toggle('on', i === upTo));
+  }
+
+  let n = 0;
+  function run() {
+    const ex = examples[n % examples.length];
+    dots.forEach((dot, i) => dot.classList.toggle('on', i === n % examples.length));
+    if (reduce) { show(ex, 3); n++; setTimeout(run, 5000); return; }
+    [0, 1, 2, 3].forEach((s, i) => setTimeout(() => show(ex, s), i * 900));
+    n++;
+    setTimeout(run, 6200);
+  }
+  run();
+})();
+</script>
+</body>
+</html>

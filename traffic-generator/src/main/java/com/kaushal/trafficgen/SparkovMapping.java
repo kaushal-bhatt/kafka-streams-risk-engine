@@ -59,7 +59,7 @@ public final class SparkovMapping {
             throw new IOException("""
                     No data directory at %s.
                     Download the dataset from https://www.kaggle.com/datasets/kartik2112/fraud-detection
-                    and unzip fraudTrain.csv and fraudTest.csv there (see docs/DATA.md)."""
+                    and unzip fraudTrain.csv and fraudTest.csv there."""
                     .formatted(dir.toAbsolutePath()));
         }
         try (var stream = Files.list(dir)) {

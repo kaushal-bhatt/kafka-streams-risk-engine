@@ -6,6 +6,10 @@ build/
 *.iml
 out/
 
+# Working notes, plans and generated reports stay on this machine only.
+# docs/index.html (the project page) is still published.
+docs/*.md
+
 # Sparkov CSVs are several hundred MB. Fetch them with scripts/fetch-data.sh instead.
 data/
 # The folder name Kaggle's download extracts to, in case it lands in the repo root.

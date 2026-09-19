@@ -21,7 +21,7 @@ import java.util.stream.Stream;
  * <pre>
  *   ./gradlew :evaluation:run
  *   ./gradlew :evaluation:run --args="--limit=100000"
- *   ./gradlew :evaluation:run --args="--data-dir=data --out=docs/EVALUATION.md"
+ *   ./gradlew :evaluation:run --args="--data-dir=data --out=build/evaluation-report.md"
  *
  *   Tuning - fraudTrain only, never the test file, with a policy variant:
  *   ./gradlew :evaluation:run --args="--files=fraudTrain --geo-certain-km=500 --geo-short-hop-score=45 --out=build/tune.md"
@@ -35,7 +35,7 @@ public final class Evaluate {
     public static void main(String[] args) throws IOException {
         Map<String, String> flags = parse(args);
         Path dataDir = Path.of(flags.getOrDefault("data-dir", "data"));
-        Path out = Path.of(flags.getOrDefault("out", "docs/EVALUATION.md"));
+        Path out = Path.of(flags.getOrDefault("out", "build/evaluation-report.md"));
         long limit = Long.parseLong(flags.getOrDefault("limit", "0"));
         long seed = Long.parseLong(flags.getOrDefault("seed", "42"));
         RiskPolicy policy = new RiskPolicy(

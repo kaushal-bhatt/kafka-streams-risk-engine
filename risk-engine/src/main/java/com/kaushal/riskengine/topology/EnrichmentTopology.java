@@ -148,8 +148,8 @@ public class EnrichmentTopology {
         // Stage 1 used an inner join, which silently dropped these. For a risk engine that
         // is backwards: an authorisation on a card the issuer has no record of is itself a
         // signal. The decision path turns a null profile into a REVIEW with an UNKNOWN_CARD
-        // reason. It is also the safety net for the race documented in docs/NOTES.md, where
-        // a transaction arrives before its card's profile has been built.
+        // reason. It is also the safety net for the race where a transaction arrives before
+        // its card's profile has been built.
         KStream<String, EnrichedTransaction> enriched = transactions
                 .leftJoin(
                         cardProfiles,

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
 # Downloads the Sparkov "Credit Card Transactions Fraud Detection Dataset".
-# See docs/DATA.md for what the columns mean and why this dataset and not the famous one.
 #
 # Kaggle needs credentials. Get an API token from https://www.kaggle.com/settings
 # ("Create New Token" downloads kaggle.json), then either put it at ~/.kaggle/kaggle.json
@@ -40,8 +39,7 @@ Either:
      and unzip the CSVs into ./data/
 
 The engine runs fine without it - the scripted scenarios in the traffic generator need
-no external data. This dataset is only for the volume replay and the precision/recall
-numbers described in docs/DATA.md.
+no external data. This dataset is only for the volume replay and the evaluation.
 EOF
   exit 1
 fi

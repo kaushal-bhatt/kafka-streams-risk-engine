@@ -18,8 +18,7 @@ import java.util.Set;
 /**
  * Replays the Sparkov "Credit Card Transactions Fraud Detection Dataset" into the live engine.
  *
- * <p>See {@code docs/DATA.md}. Field mapping lives in {@link SparkovMapping}, shared with the
- * offline evaluation.
+ * <p>Field mapping lives in {@link SparkovMapping}, shared with the offline evaluation.
  *
  * <p>The replay runs in two passes:
  * <ol>

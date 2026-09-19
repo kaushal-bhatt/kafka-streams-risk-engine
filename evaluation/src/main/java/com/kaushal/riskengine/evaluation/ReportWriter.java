@@ -35,9 +35,8 @@ final class ReportWriter {
                 + "gives the same numbers.\n");
         md.append("- **Labels:** each transaction's `is_fraud` travels through the pipeline in `labelledFraud` and comes "
                 + "back on the engine's `Decision`. What's scored is what the engine emitted.\n");
-        md.append("- **Thresholds:** as in `RiskRules`, with policy `%s` (`RiskPolicy`). How the policy was chosen, "
-                .formatted(result.policy())
-                + "on `fraudTrain` only, is in [TUNING.md](TUNING.md).\n");
+        md.append("- **Thresholds:** as in `RiskRules`, with policy `%s` (`RiskPolicy`), chosen on `fraudTrain` only.\n"
+                .formatted(result.policy()));
         md.append("- **Run time:** %s for %s transactions (%s/s).\n\n"
                 .formatted(duration(result.elapsed().toSeconds()), n(result.rows()),
                         n(Math.round(result.rows() / Math.max(1e-9, result.elapsed().toNanos() / 1e9)))));
